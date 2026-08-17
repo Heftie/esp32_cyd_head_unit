@@ -241,17 +241,59 @@ void app_main(void)
     char buf[16];
     uint16_t n = 0;
 
-    ESP_ERROR_CHECK(lcd_display_brightness_init());
+    const lcd_config_t lcd_cfg = {
+        .spi_host = LCD_SPI_HOST,
+        .spi_clk_gpio = LCD_SPI_CLK,
+        .spi_mosi_gpio = LCD_SPI_MOSI,
+        .spi_miso_gpio = LCD_SPI_MISO,
+        .dc_gpio = LCD_DC,
+        .cs_gpio = LCD_CS,
+        .reset_gpio = LCD_RESET,
+        .backlight_gpio = LCD_BACKLIGHT,
+        .backlight_ledc_channel = LCD_BACKLIGHT_LEDC_CH,
+        .pixel_clock_hz = LCD_PIXEL_CLOCK_HZ,
+        .lcd_cmd_bits = LCD_CMD_BITS,
+        .lcd_param_bits = LCD_PARAM_BITS,
+        .bits_per_pixel = LCD_BITS_PIXEL,
+        .h_res = LCD_H_RES,
+        .v_res = LCD_V_RES,
+        .draw_buf_lines = LCD_BUF_LINES,
+        .double_buffer = LCD_DOUBLE_BUFFER,
+        .mirror_x = LCD_MIRROR_X,
+        .mirror_y = LCD_MIRROR_Y,
+    };
 
-    ESP_ERROR_CHECK(app_lcd_init(&lcd_io, &lcd_panel));
-    lvgl_display = app_lvgl_init(lcd_io, lcd_panel);
+    const touch_config_t touch_hw_cfg = {
+        .spi_host = TOUCH_SPI,
+        .spi_clk_gpio = TOUCH_SPI_CLK,
+        .spi_mosi_gpio = TOUCH_SPI_MOSI,
+        .spi_miso_gpio = TOUCH_SPI_MISO,
+        .cs_gpio = TOUCH_CS,
+        .dc_gpio = TOUCH_DC,
+        .rst_gpio = TOUCH_RST,
+        .irq_gpio = TOUCH_IRQ,
+        .clock_hz = TOUCH_CLOCK_HZ,
+        .h_res = LCD_H_RES,
+        .v_res = LCD_V_RES,
+        .mirror_x = TOUCH_MIRROR_X,
+        .mirror_y = TOUCH_MIRROR_Y,
+        .x_res_min = TOUCH_X_RES_MIN,
+        .x_res_max = TOUCH_X_RES_MAX,
+        .y_res_min = TOUCH_Y_RES_MIN,
+        .y_res_max = TOUCH_Y_RES_MAX,
+    };
+
+    ESP_ERROR_CHECK(lcd_display_brightness_init(&lcd_cfg));
+
+    ESP_ERROR_CHECK(app_lcd_init(&lcd_cfg, &lcd_io, &lcd_panel));
+    lvgl_display = app_lvgl_init(&lcd_cfg, lcd_io, lcd_panel);
     if (lvgl_display == NULL)
     {
         ESP_LOGI(TAG, "fatal error in app_lvgl_init");
         esp_restart();
     }
-    
-    ESP_ERROR_CHECK(touch_init(&tp));
+
+    ESP_ERROR_CHECK(touch_init(&touch_hw_cfg, &tp));
     touch_cfg.disp = lvgl_display;
     touch_cfg.handle = tp;
     touch_cfg.scale.x = 0;

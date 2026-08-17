@@ -1,0 +1,5 @@
+dependencies:
+  atanisoft/esp_lcd_touch_xpt2046: "^1.0.6"
+
+  idf:
+    version: ">=6.0.0"

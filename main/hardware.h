@@ -1,5 +1,7 @@
 #pragma once
 
+#include <driver/gpio.h>
+
 #define LCD_H_RES          240
 #define LCD_V_RES          320
 #define LCD_BITS_PIXEL     16
@@ -35,7 +37,7 @@
 #define TOUCH_Y_RES_MIN 0
 #define TOUCH_Y_RES_MAX 320
 
-#define TOUCH_CLOCK_HZ ESP_LCD_TOUCH_SPI_CLOCK_HZ
+#define TOUCH_CLOCK_HZ (1 * 1000 * 1000) // matches ESP_LCD_TOUCH_SPI_CLOCK_HZ, the xpt2046 driver's own default
 #define TOUCH_SPI      SPI3_HOST
 #define TOUCH_SPI_CLK  (gpio_num_t) GPIO_NUM_25
 #define TOUCH_SPI_MOSI (gpio_num_t) GPIO_NUM_32

@@ -21,7 +21,7 @@ Sources: [witnessmenow/ESP32-Cheap-Yellow-Display schematic (MCU board)](https:/
 | RST (Reset) | TFT_RST | -1 on stock wiring (tied to EN) — **this project drives GPIO 4 as `LCD_RESET` instead** (see note below) |
 | Backlight (BL) | TFT_BL | GPIO 21 |
 
-> **This project's deviation:** [`hardware.h`](main/hardware.h) defines `LCD_RESET` as `GPIO_NUM_4` and passes it to `reset_gpio_num` in [`lcd.c`](main/lcd.c). On stock CYD wiring GPIO 4 is the RGB LED's red channel, not a display reset line — the panel's actual reset happens via the EN pin at power-on and the ILI9341/ST7789 software-reset command sent during `esp_lcd_panel_init()`. Toggling GPIO 4 has no effect on the display; it just blips the red LED at boot/reset. Since this project also drives the RGB LED on the same pin (`RGB_LED_RED` in `hardware.h`), the two definitions share GPIO 4 — harmlessly, because the `LCD_RESET` role is a no-op. Just expect the red LED to blip on every display init.
+> **This project's deviation:** [`hardware.h`](main/hardware.h) defines `LCD_RESET` as `GPIO_NUM_4`, which `demo.c` passes into `lcd_config_t.reset_gpio` for [`app_lcd_init()`](components/lcd/lcd.c). On stock CYD wiring GPIO 4 is the RGB LED's red channel, not a display reset line — the panel's actual reset happens via the EN pin at power-on and the ILI9341/ST7789 software-reset command sent during `esp_lcd_panel_init()`. Toggling GPIO 4 has no effect on the display; it just blips the red LED at boot/reset. Since this project also drives the RGB LED on the same pin (`RGB_LED_RED` in `hardware.h`), the two definitions share GPIO 4 — harmlessly, because the `LCD_RESET` role is a no-op. Just expect the red LED to blip on every display init.
 
 ### 1.2 Resistive Touchscreen (XPT2046, SPI — VSPI bus, separate from TFT SPI)
 
@@ -180,4 +180,4 @@ No MicroSD or speaker code exists in this project — those pins (5, 18, 19, 23,
 
 ---
 
-*Board pinout compiled from the [ESP32-Cheap-Yellow-Display GitHub schematic](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display) and community documentation (Random Nerd Tutorials, Kafkar Projects); cross-checked line-by-line against this repo's [`hardware.h`](main/hardware.h), [`lcd.c`](main/lcd.c), and [`touch.c`](main/touch.c) on 2026-08-15. Verify against your specific board revision before wiring external peripherals.*
+*Board pinout compiled from the [ESP32-Cheap-Yellow-Display GitHub schematic](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display) and community documentation (Random Nerd Tutorials, Kafkar Projects); cross-checked line-by-line against this repo's [`hardware.h`](main/hardware.h), [`lcd.c`](components/lcd/lcd.c), and [`touch.c`](components/touch/touch.c) on 2026-08-15. Verify against your specific board revision before wiring external peripherals.*

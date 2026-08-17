@@ -1,15 +1,7 @@
-#include <stdio.h>
-#include <math.h>
+#include "lcd.h"
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/event_groups.h>
-#include <freertos/semphr.h>
-
-#include <esp_system.h>
-#include <esp_log.h>
-#include <esp_err.h>
 #include <esp_check.h>
+#include <esp_log.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_ops.h>
@@ -21,27 +13,26 @@
 #include <esp_lcd_ili9341.h>
 #endif
 
-#include <lvgl.h>
-#include <esp_lvgl_port.h>
+static const char *TAG = "lcd";
 
-#include "hardware.h"
+static ledc_channel_t s_backlight_channel;
 
-static const char *TAG="lcd";
-
-esp_err_t lcd_display_brightness_init(void)
+esp_err_t lcd_display_brightness_init(const lcd_config_t *config)
 {
-    const ledc_channel_config_t LCD_backlight_channel = {
-        .gpio_num = LCD_BACKLIGHT,
+    s_backlight_channel = config->backlight_ledc_channel;
+
+    const ledc_channel_config_t backlight_channel_cfg = {
+        .gpio_num = config->backlight_gpio,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LCD_BACKLIGHT_LEDC_CH,
+        .channel = config->backlight_ledc_channel,
         .intr_type = LEDC_INTR_DISABLE,
         .timer_sel = 1,
         .duty = 0,
         .hpoint = 0,
         .flags.output_invert = false
     };
- 
-    const ledc_timer_config_t LCD_backlight_timer = {
+
+    const ledc_timer_config_t backlight_timer_cfg = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
         .timer_num = 1,
@@ -49,9 +40,9 @@ esp_err_t lcd_display_brightness_init(void)
         .clk_cfg = LEDC_AUTO_CLK
     };
 
-    ESP_ERROR_CHECK(ledc_timer_config(&LCD_backlight_timer));
-    ESP_ERROR_CHECK(ledc_channel_config(&LCD_backlight_channel));
- 
+    ESP_ERROR_CHECK(ledc_timer_config(&backlight_timer_cfg));
+    ESP_ERROR_CHECK(ledc_channel_config(&backlight_channel_cfg));
+
     return ESP_OK;
 }
 
@@ -68,8 +59,8 @@ esp_err_t lcd_display_brightness_set(int brightness_percent)
 
     uint32_t duty_cycle = (1023 * brightness_percent) / 100;
 
-    ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LCD_BACKLIGHT_LEDC_CH, duty_cycle));
-    ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LCD_BACKLIGHT_LEDC_CH));
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, s_backlight_channel, duty_cycle));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, s_backlight_channel));
 
     return ESP_OK;
 }
@@ -95,41 +86,41 @@ esp_err_t lcd_display_rotate(lv_display_t *lvgl_disp, lv_display_rotation_t dir)
     return ESP_FAIL;
 }
 
-esp_err_t app_lcd_init(esp_lcd_panel_io_handle_t *lcd_io, esp_lcd_panel_handle_t *lcd_panel)
+esp_err_t app_lcd_init(const lcd_config_t *config, esp_lcd_panel_io_handle_t *lcd_io, esp_lcd_panel_handle_t *lcd_panel)
 {
-    const spi_bus_config_t buscfg = { 
-        .mosi_io_num = LCD_SPI_MOSI,
-        .miso_io_num = LCD_SPI_MISO,
-        .sclk_io_num = LCD_SPI_CLK,
+    const spi_bus_config_t buscfg = {
+        .mosi_io_num = config->spi_mosi_gpio,
+        .miso_io_num = config->spi_miso_gpio,
+        .sclk_io_num = config->spi_clk_gpio,
         .quadhd_io_num = GPIO_NUM_NC,
         .quadwp_io_num = GPIO_NUM_NC,
-        .max_transfer_sz = LCD_DRAWBUF_SIZE * sizeof(uint16_t),
+        .max_transfer_sz = config->h_res * config->draw_buf_lines * sizeof(uint16_t),
     };
 
-    ESP_RETURN_ON_ERROR(spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO), TAG, "SPI init failed");
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(config->spi_host, &buscfg, SPI_DMA_CH_AUTO), TAG, "SPI init failed");
 
 
     const esp_lcd_panel_io_spi_config_t io_config = {
-        .cs_gpio_num = LCD_CS,
-        .dc_gpio_num = LCD_DC,
+        .cs_gpio_num = config->cs_gpio,
+        .dc_gpio_num = config->dc_gpio,
         .spi_mode = 0,
-        .pclk_hz = LCD_PIXEL_CLOCK_HZ,
+        .pclk_hz = config->pixel_clock_hz,
         .trans_queue_depth = 10,
-        .lcd_cmd_bits = LCD_CMD_BITS,
-        .lcd_param_bits = LCD_PARAM_BITS,
+        .lcd_cmd_bits = config->lcd_cmd_bits,
+        .lcd_param_bits = config->lcd_param_bits,
     };
 
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST, &io_config, lcd_io), TAG, "LCD new panel io failed");
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)config->spi_host, &io_config, lcd_io), TAG, "LCD new panel io failed");
 
 
     const esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = LCD_RESET,
+        .reset_gpio_num = config->reset_gpio,
         #ifdef CYD_ILI9341
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         #else
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         #endif
-        .bits_per_pixel = LCD_BITS_PIXEL,
+        .bits_per_pixel = config->bits_per_pixel,
     };
 
     #ifdef CYD_ILI9341
@@ -142,14 +133,14 @@ esp_err_t app_lcd_init(esp_lcd_panel_io_handle_t *lcd_io, esp_lcd_panel_handle_t
     esp_lcd_panel_reset(*lcd_panel);
     esp_lcd_panel_init(*lcd_panel);
 
-    esp_lcd_panel_mirror(*lcd_panel, LCD_MIRROR_X, LCD_MIRROR_Y);
+    esp_lcd_panel_mirror(*lcd_panel, config->mirror_x, config->mirror_y);
     esp_lcd_panel_disp_on_off(*lcd_panel, true);
 
     return r;
 }
 
 
-lv_display_t *app_lvgl_init(esp_lcd_panel_io_handle_t lcd_io, esp_lcd_panel_handle_t lcd_panel)
+lv_display_t *app_lvgl_init(const lcd_config_t *config, esp_lcd_panel_io_handle_t lcd_io, esp_lcd_panel_handle_t lcd_panel)
 {
     const lvgl_port_cfg_t lvgl_cfg = {
         .task_priority = 4,
@@ -173,15 +164,15 @@ lv_display_t *app_lvgl_init(esp_lcd_panel_io_handle_t lcd_io, esp_lcd_panel_hand
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = lcd_io,
         .panel_handle = lcd_panel,
-        .buffer_size = LCD_DRAWBUF_SIZE,
-        .double_buffer = LCD_DOUBLE_BUFFER,
-        .hres = LCD_H_RES,
-        .vres = LCD_V_RES,
+        .buffer_size = config->h_res * config->draw_buf_lines,
+        .double_buffer = config->double_buffer,
+        .hres = config->h_res,
+        .vres = config->v_res,
         .monochrome = false,
         .rotation = {
             .swap_xy = false,
-            .mirror_x = LCD_MIRROR_X,
-            .mirror_y = LCD_MIRROR_Y,
+            .mirror_x = config->mirror_x,
+            .mirror_y = config->mirror_y,
         },
         .flags = {
             .buff_dma = true,
@@ -189,6 +180,6 @@ lv_display_t *app_lvgl_init(esp_lcd_panel_io_handle_t lcd_io, esp_lcd_panel_hand
             .swap_bytes = true,
         }
     };
-    
+
     return lvgl_port_add_disp(&disp_cfg);
 }
