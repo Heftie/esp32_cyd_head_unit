@@ -1,15 +1,12 @@
 #include <stdio.h>
-#include <math.h>
+#include <string.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/event_groups.h>
-#include <freertos/semphr.h>
 
 #include <esp_system.h>
 #include <esp_log.h>
 #include <esp_err.h>
-#include <esp_check.h>
 
 #include <lvgl.h>
 #include <esp_lvgl_port.h>
@@ -23,68 +20,9 @@
 #include "sd_storage.h"
 #include "logger.h"
 
-static const char *TAG="demo";
+static const char *TAG = "main";
 
-lv_obj_t *lbl_counter;
-
-
-typedef struct {
-    lv_obj_t *label_title;
-    lv_obj_t *label_value;
-    lv_obj_t *label_unit;
-} multimeter_ui_t;
-
-multimeter_ui_t ui;
-
-void multimeter_create_ui(void)
-{
-    lv_obj_t *scr = lv_scr_act();
-
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-
-    // Titel
-    ui.label_title = lv_label_create(scr);
-    lv_label_set_text(ui.label_title, "DC Voltage");
-    lv_obj_set_style_text_color(ui.label_title, lv_color_white(), 0);
-    lv_obj_set_style_text_font(ui.label_title, &lv_font_montserrat_20, 0);
-    lv_obj_align(ui.label_title, LV_ALIGN_TOP_MID, 0, 10);
-
-    // Wert
-    ui.label_value = lv_label_create(scr);
-    lv_label_set_text(ui.label_value, "0.00");
-    lv_obj_set_style_text_color(ui.label_value, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_text_font(ui.label_value, &lv_font_montserrat_28, 0);
-    lv_obj_align(ui.label_value, LV_ALIGN_CENTER, -20, 20);
-
-    // Einheit
-    ui.label_unit = lv_label_create(scr);
-    lv_label_set_text(ui.label_unit, "V");
-    lv_obj_set_style_text_color(ui.label_unit, lv_color_white(), 0);
-    lv_obj_set_style_text_font(ui.label_unit, &lv_font_montserrat_28, 0);
-    lv_obj_align_to(ui.label_unit, ui.label_value, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
-}
-
-void multimeter_update(float value, const char *unit)
-{
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%.2f", value);
-
-    lv_label_set_text(ui.label_value, buf);
-    lv_label_set_text(ui.label_unit, unit);
-
-    // Startfarbe = grün
-    lv_color_t color = lv_color_hex(0x00FF00);
-
-    if (value > 10.0) {
-        color = lv_color_hex(0xFFFF00); // gelb
-    }
-
-    if (value > 20.0) {
-        color = lv_color_hex(0xFF0000); // rot
-    }
-
-    lv_obj_set_style_text_color(ui.label_value, color, 0);
-}
+static void tile_ui_create(void);
 
 typedef struct {
     lv_obj_t *area;
@@ -126,15 +64,27 @@ static void touch_test_clear_cb(lv_event_t *e)
     lvgl_port_unlock();
 }
 
-void touch_test_create_ui(void)
+static void touch_test_back_cb(lv_event_t *e)
+{
+    tile_ui_create();
+}
+
+// Diagnostics screen — verifies the panel after any hardware change.
+// Reachable from the dashboard's Settings button; Back returns there.
+static void touch_test_create_ui(void)
 {
     lvgl_port_lock(0);
 
     lv_obj_t *scr = lv_scr_act();
     lv_obj_clean(scr);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    // lv_obj_clean() only removes children — the screen object itself is
+    // reused across screens, so tile_ui_create()'s flex layout/padding
+    // would otherwise leak in here and turn this into a scrolling page.
+    lv_obj_set_layout(scr, LV_LAYOUT_NONE);
+    lv_obj_set_style_pad_all(scr, 0, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Ganzflächiger Bereich, der Touch-Punkte als Punkte anzeigt
     touch_test_ui.area = lv_obj_create(scr);
     lv_obj_remove_style_all(touch_test_ui.area);
     lv_obj_set_size(touch_test_ui.area, lv_pct(100), lv_pct(100));
@@ -142,39 +92,173 @@ void touch_test_create_ui(void)
     lv_obj_add_flag(touch_test_ui.area, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(touch_test_ui.area, touch_test_draw_cb, LV_EVENT_PRESSING, NULL);
 
-    // Anzeige der aktuellen Touch-Koordinaten
     touch_test_ui.label = lv_label_create(scr);
-    lv_label_set_text(touch_test_ui.label, "Bildschirm beruehren zum Testen");
+    lv_label_set_text(touch_test_ui.label, "Touch to test");
     lv_obj_set_style_text_color(touch_test_ui.label, lv_color_white(), 0);
     lv_obj_align(touch_test_ui.label, LV_ALIGN_TOP_MID, 0, 5);
 
-    // Button zum Loeschen der Punkte
     lv_obj_t *btn_clear = lv_button_create(scr);
     lv_obj_set_size(btn_clear, 80, 35);
-    lv_obj_align(btn_clear, LV_ALIGN_BOTTOM_MID, 0, -5);
+    lv_obj_align(btn_clear, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
     lv_obj_add_event_cb(btn_clear, touch_test_clear_cb, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t *lbl_clear = lv_label_create(btn_clear);
     lv_label_set_text(lbl_clear, "Clear");
     lv_obj_center(lbl_clear);
 
+    lv_obj_t *btn_back = lv_button_create(scr);
+    lv_obj_set_size(btn_back, 80, 35);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, 5, -5);
+    lv_obj_add_event_cb(btn_back, touch_test_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, "Back");
+    lv_obj_center(lbl_back);
+
     lvgl_port_unlock();
 }
 
-void ui_event_Screen(lv_event_t *e)
+// --- Dashboard: one tile per data_hub channel, created on first sight and
+// refreshed on a timer. Nothing here assumes a fixed set of channels — the
+// same screen works whether the companion MCU exposes one reading or ten.
+
+typedef struct {
+    char name[DATA_HUB_NAME_LEN];
+    lv_obj_t *label_value;
+} channel_tile_t;
+
+static channel_tile_t s_tiles[DATA_HUB_MAX_CHANNELS];
+static size_t s_tile_count;
+static lv_obj_t *s_tile_container;
+static lv_obj_t *s_empty_label;
+static lv_timer_t *s_tile_refresh_timer;
+static bool s_tile_screen_active;
+
+static channel_tile_t *find_or_create_tile(const char *name)
 {
-static uint8_t pos=1;
-
-    lv_event_code_t event_code = lv_event_get_code(e);
-    lv_obj_t *btn = (lv_obj_t *)lv_event_get_user_data(e);
-
-    if (event_code == LV_EVENT_CLICKED)
-    {
-        lv_obj_align(btn, pos++, 0, 0);
-        if (pos > 9) pos=1;
+    for (size_t i = 0; i < s_tile_count; i++) {
+        if (strcmp(s_tiles[i].name, name) == 0) {
+            return &s_tiles[i];
+        }
     }
+    if (s_tile_count >= DATA_HUB_MAX_CHANNELS) {
+        return NULL;
+    }
+
+    channel_tile_t *t = &s_tiles[s_tile_count++];
+    strncpy(t->name, name, sizeof(t->name) - 1);
+    t->name[sizeof(t->name) - 1] = '\0';
+
+    lv_obj_t *tile = lv_obj_create(s_tile_container);
+    lv_obj_remove_style_all(tile);
+    lv_obj_set_size(tile, 130, 78);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(0x1c1c1c), 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(tile, 6, 0);
+    lv_obj_set_style_pad_all(tile, 8, 0);
+
+    lv_obj_t *label_name = lv_label_create(tile);
+    lv_label_set_text(label_name, t->name);
+    lv_obj_set_style_text_color(label_name, lv_color_hex(0xaaaaaa), 0);
+    lv_obj_align(label_name, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    t->label_value = lv_label_create(tile);
+    lv_label_set_text(t->label_value, "--");
+    lv_obj_set_style_text_color(t->label_value, lv_color_hex(0x00e08a), 0);
+    lv_obj_set_style_text_font(t->label_value, &lv_font_montserrat_20, 0);
+    lv_obj_align(t->label_value, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    return t;
 }
 
+static void tile_ui_refresh_timer_cb(lv_timer_t *timer)
+{
+    if (!s_tile_screen_active) {
+        return;
+    }
+
+    data_hub_channel_info_t channels[DATA_HUB_MAX_CHANNELS];
+    size_t n = data_hub_list_channels(channels, DATA_HUB_MAX_CHANNELS);
+
+    lvgl_port_lock(0);
+
+    if (n > 0) {
+        lv_obj_add_flag(s_empty_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(s_empty_label, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        channel_tile_t *t = find_or_create_tile(channels[i].name);
+        if (t == NULL) {
+            continue; // channel table full — see DATA_HUB_MAX_CHANNELS
+        }
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%.2f %s", channels[i].latest_value, channels[i].unit);
+        lv_label_set_text(t->label_value, buf);
+    }
+
+    lvgl_port_unlock();
+}
+
+static void tile_ui_settings_cb(lv_event_t *e)
+{
+    s_tile_screen_active = false;
+    touch_test_create_ui();
+}
+
+// Default screen. Rebuilds from scratch each time it's shown (matching the
+// rest of this file's single-active-screen pattern) — tile state is
+// re-populated from data_hub on the next refresh tick rather than carried
+// across screen switches.
+static void tile_ui_create(void)
+{
+    lvgl_port_lock(0);
+
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_pad_all(scr, 0, 0);
+    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *header = lv_obj_create(scr);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 34);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(header, 8, 0);
+
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Telemetry");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+
+    lv_obj_t *btn_settings = lv_button_create(header);
+    lv_obj_set_size(btn_settings, 70, 26);
+    lv_obj_add_event_cb(btn_settings, tile_ui_settings_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_settings = lv_label_create(btn_settings);
+    lv_label_set_text(lbl_settings, "Settings");
+    lv_obj_center(lbl_settings);
+
+    s_tile_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_tile_container);
+    lv_obj_set_width(s_tile_container, lv_pct(100));
+    lv_obj_set_flex_grow(s_tile_container, 1);
+    lv_obj_set_flex_flow(s_tile_container, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_all(s_tile_container, 6, 0);
+    lv_obj_set_style_pad_gap(s_tile_container, 6, 0);
+
+    s_empty_label = lv_label_create(s_tile_container);
+    lv_label_set_text(s_empty_label, "Waiting for channels...");
+    lv_obj_set_style_text_color(s_empty_label, lv_color_hex(0x888888), 0);
+
+    s_tile_count = 0;
+    s_tile_screen_active = true;
+
+    lvgl_port_unlock();
+
+    if (s_tile_refresh_timer == NULL) {
+        s_tile_refresh_timer = lv_timer_create(tile_ui_refresh_timer_cb, 500, NULL);
+    }
+}
 
 static void dump_data_hub_channels(void)
 {
@@ -191,48 +275,6 @@ static void dump_data_hub_channels(void)
     }
 }
 
-static esp_err_t app_lvgl_main(void)
-{
-    lv_obj_t *scr = lv_scr_act();
-
-    lvgl_port_lock(0);
-
-    lv_obj_t *label = lv_label_create(scr);
-    lv_label_set_text(label, "Hello LVGL 9 and esp_lvgl_port!");
-    lv_obj_set_style_text_color(label, lv_color_white(), LV_STATE_DEFAULT);
-    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -48);
-
-    lv_obj_t *labelR = lv_label_create(scr);
-    lv_label_set_text(labelR, "Red");
-    lv_obj_set_style_text_color(labelR, lv_color_make(0xff, 0, 0), LV_STATE_DEFAULT);
-    lv_obj_align(labelR, LV_ALIGN_TOP_MID, 0, 0);
-
-    lv_obj_t *labelG = lv_label_create(scr);
-    lv_label_set_text(labelG, "Green");
-    lv_obj_set_style_text_color(labelG, lv_color_make(0, 0xff, 0), LV_STATE_DEFAULT);
-    lv_obj_align(labelG, LV_ALIGN_TOP_MID, 0, 32);
-
-    lv_obj_t *labelB = lv_label_create(scr);
-    lv_label_set_text(labelB, "Blue");
-    lv_obj_set_style_text_color(labelB, lv_color_make(0, 0, 0xff), LV_STATE_DEFAULT);
-    lv_obj_align(labelB, LV_ALIGN_TOP_MID, 0, 64);
-
-    lv_obj_t *btn_counter = lv_button_create(scr);
-    lv_obj_align(btn_counter, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_size(btn_counter, 120, 50);
-    lv_obj_add_event_cb(btn_counter, ui_event_Screen, LV_EVENT_ALL, btn_counter);
-
-    lbl_counter = lv_label_create(btn_counter);
-    lv_label_set_text(lbl_counter, "testing");
-    lv_obj_set_style_text_color(lbl_counter, lv_color_make(248, 11, 181), LV_STATE_DEFAULT);
-    lv_obj_align(lbl_counter, LV_ALIGN_CENTER, 0, 0);
-
-    lvgl_port_unlock();
-
-    return ESP_OK;
-}
-
-
 void app_main(void)
 {
     esp_lcd_panel_io_handle_t lcd_io;
@@ -240,8 +282,6 @@ void app_main(void)
     esp_lcd_touch_handle_t tp;
     lvgl_port_touch_cfg_t touch_cfg;
     lv_display_t *lvgl_display = NULL;
-    char buf[16];
-    uint16_t n = 0;
 
     const lcd_config_t lcd_cfg = {
         .spi_host = LCD_SPI_HOST,
@@ -301,7 +341,6 @@ void app_main(void)
 
     ESP_ERROR_CHECK(lcd_display_brightness_set(75));
     ESP_ERROR_CHECK(lcd_display_rotate(lvgl_display, LV_DISPLAY_ROTATION_90));
-    //ESP_ERROR_CHECK(app_lvgl_main());
 
     data_hub_init();
 
@@ -357,12 +396,11 @@ void app_main(void)
         ESP_LOGW(TAG, "sd_storage_init failed — no card, or wiring not verified yet");
     }
 
-    touch_test_create_ui();
-    //multimeter_create_ui();
-     float v = 0.0;
-     uint32_t loop_count = 0;
-     uint32_t led_counter = 0;
-     while (1)
+    tile_ui_create();
+
+    uint32_t loop_count = 0;
+    uint32_t led_counter = 0;
+    while (1)
     {
         led_counter += 1;
         switch (led_counter)
@@ -381,12 +419,7 @@ void app_main(void)
 
             break;
         }
-        if(led_counter > 40) led_counter = 0;
-
-        v += 0.5;
-        if (v > 25) v = 0.0;
-
-        //multimeter_update(v, "V");
+        if (led_counter > 40) led_counter = 0;
 
         if (++loop_count % 20 == 0) {
             dump_data_hub_channels();
@@ -394,6 +427,4 @@ void app_main(void)
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-
-    vTaskDelay(portMAX_DELAY);
 }
