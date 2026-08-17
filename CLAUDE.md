@@ -39,7 +39,7 @@ and `main/hardware.h` (`LCD_MIRROR_X`/`LCD_MIRROR_Y`).
 
 ## Architecture
 
-`main/demo.c` is the app entry point and currently doubles as a scratch pad
+`main/main.c` is the app entry point and currently doubles as a scratch pad
 for UI experiments (multiple demo UIs — `multimeter_create_ui`,
 `touch_test_create_ui`, the RGB/counter demo — are defined side by side and
 swapped by commenting/uncommenting calls in `app_main`). When working here,
