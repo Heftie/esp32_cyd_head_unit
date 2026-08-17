@@ -1,0 +1,6 @@
+dependencies:
+  espressif/mdns: "^1.8.2"
+  espressif/cjson: "^1.0.5"
+
+  idf:
+    version: ">=6.0.0"

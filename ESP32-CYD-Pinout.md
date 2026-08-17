@@ -23,7 +23,7 @@ Sources: [witnessmenow/ESP32-Cheap-Yellow-Display schematic (MCU board)](https:/
 
 > **This project's deviation:** [`hardware.h`](main/hardware.h) defines `LCD_RESET` as `GPIO_NUM_4`, which `main.c` passes into `lcd_config_t.reset_gpio` for [`app_lcd_init()`](components/lcd/lcd.c). On stock CYD wiring GPIO 4 is the RGB LED's red channel, not a display reset line — the panel's actual reset happens via the EN pin at power-on and the ILI9341/ST7789 software-reset command sent during `esp_lcd_panel_init()`. Toggling GPIO 4 has no effect on the display; it just blips the red LED at boot/reset. Since this project also drives the RGB LED on the same pin (`RGB_LED_RED` in `hardware.h`), the two definitions share GPIO 4 — harmlessly, because the `LCD_RESET` role is a no-op. Just expect the red LED to blip on every display init.
 
-### 1.2 Resistive Touchscreen (XPT2046, SPI — VSPI bus, separate from TFT SPI)
+### 1.2 Resistive Touchscreen (XPT2046 — bit-banged GPIO in this project, not VSPI)
 
 | Function | Signal | GPIO |
 |---|---|---|
@@ -32,6 +32,15 @@ Sources: [witnessmenow/ESP32-Cheap-Yellow-Display schematic (MCU board)](https:/
 | MISO | XPT2046_MISO (T_OUT) | GPIO 39 |
 | CLK | XPT2046_CLK (T_CLK) | GPIO 25 |
 | CS | XPT2046_CS (T_CS) | GPIO 33 |
+
+> **This project's deviation:** these are electrically VSPI (SPI3) pins on
+> stock CYD wiring, and early on this project drove them with the real SPI3
+> peripheral. It now bit-bangs the XPT2046 protocol over plain GPIO instead
+> (`components/touch/xpt2046_bitbang_io.c`) — a fake `esp_lcd_panel_io_t`
+> whose `rx_param` toggles these pins directly, so the vendored XPT2046
+> driver runs unmodified on top of it. This frees VSPI entirely for the
+> microSD slot (§1.4) to own exclusively at full hardware SPI clock, with
+> no bus arbitration between touch and SD ever needed.
 
 ### 1.3 RGB LED (onboard, back of board — active LOW)
 
@@ -43,7 +52,7 @@ Sources: [witnessmenow/ESP32-Cheap-Yellow-Display schematic (MCU board)](https:/
 
 > LOW = ON, HIGH = OFF (inverted logic). This project drives all three channels via `rgb_led_init()`/`rgb_led_set_rgb()` (see `main/hardware.h`, `components/rgb_led`). GPIO 4 (red channel) is also labeled `LCD_RESET` (see §1.1 note), but that's a no-op for the display, so red is genuinely usable alongside green/blue.
 
-### 1.4 MicroSD Card Slot (SPI — shares VSPI bus with touchscreen)
+### 1.4 MicroSD Card Slot (SPI — owns VSPI exclusively in this project)
 
 | Function | GPIO |
 |---|---|
@@ -51,6 +60,14 @@ Sources: [witnessmenow/ESP32-Cheap-Yellow-Display schematic (MCU board)](https:/
 | MOSI | GPIO 23 |
 | SCK | GPIO 18 |
 | CS | GPIO 5 |
+
+> These are physically different pins from the touchscreen's (§1.2) — the
+> two were never on the same electrical bus, despite some community docs
+> describing SD as "sharing VSPI with touch." This project's `sd_storage`
+> component (see `main/hardware.h`'s `SD_SPI_*`/`SD_CS` defines) mounts the
+> card on VSPI (SPI3_HOST) at boot and keeps it mounted permanently — that
+> peripheral has nothing else to share it with once touch moved to
+> bit-banged GPIO (§1.2).
 
 ### 1.5 LDR (Light-Dependent Resistor / ambient light sensor)
 
@@ -168,16 +185,24 @@ This project is **ESP-IDF native** (`esp_lcd` + `esp_lvgl_port`), not Arduino/TF
 #define LCD_RESET     GPIO_NUM_4   // see §1.1 — inert on stock wiring, don't rely on it
 #define LCD_BACKLIGHT GPIO_NUM_21  // PWM via LEDC
 
-// Touch (esp_lcd_touch_xpt2046, SPI3_HOST)
+// Touch (esp_lcd_touch_xpt2046, bit-banged GPIO — see §1.2, not SPI3_HOST)
 #define TOUCH_SPI_CLK  GPIO_NUM_25
 #define TOUCH_SPI_MOSI GPIO_NUM_32
 #define TOUCH_SPI_MISO GPIO_NUM_39
 #define TOUCH_CS       GPIO_NUM_33
 #define TOUCH_IRQ      GPIO_NUM_NC  // disabled on purpose, see main/hardware.h comment
+
+// MicroSD (sd_storage, SPI3_HOST — exclusive, see §1.4)
+#define SD_SPI_CLK     GPIO_NUM_18
+#define SD_SPI_MOSI    GPIO_NUM_23
+#define SD_SPI_MISO    GPIO_NUM_19
+#define SD_CS          GPIO_NUM_5
 ```
 
-No MicroSD or speaker code exists in this project — those pins (5, 18, 19, 23, 26) are untouched by the codebase, free per the board's stock wiring, but not wired up in software here.
+No speaker code exists in this project — GPIO 26 is untouched by the
+codebase, free per the board's stock wiring, but not wired up in software
+here.
 
 ---
 
-*Board pinout compiled from the [ESP32-Cheap-Yellow-Display GitHub schematic](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display) and community documentation (Random Nerd Tutorials, Kafkar Projects); cross-checked line-by-line against this repo's [`hardware.h`](main/hardware.h), [`lcd.c`](components/lcd/lcd.c), and [`touch.c`](components/touch/touch.c) on 2026-08-15. Verify against your specific board revision before wiring external peripherals.*
+*Board pinout compiled from the [ESP32-Cheap-Yellow-Display GitHub schematic](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display) and community documentation (Random Nerd Tutorials, Kafkar Projects); cross-checked line-by-line against this repo's [`hardware.h`](main/hardware.h), [`lcd.c`](components/lcd/lcd.c), [`touch.c`](components/touch/touch.c)/[`xpt2046_bitbang_io.c`](components/touch/xpt2046_bitbang_io.c), and [`sd_storage.c`](components/sd_storage/sd_storage.c) on 2026-08-17. Verify against your specific board revision before wiring external peripherals.*

@@ -19,6 +19,7 @@
 #include "rgb_led.h"
 #include "sd_storage.h"
 #include "logger.h"
+#include "web_server.h"
 
 static const char *TAG = "main";
 
@@ -394,6 +395,16 @@ void app_main(void)
         }
     } else {
         ESP_LOGW(TAG, "sd_storage_init failed — no card, or wiring not verified yet");
+    }
+
+    // Independent of SD: /api/data still works without a card, /download
+    // and /api/history just report "no log file yet" if sd_storage_init
+    // above failed.
+    const web_server_config_t web_cfg = {
+        .http_port = 0, // default 80
+    };
+    if (web_server_init(&web_cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "web_server_init failed");
     }
 
     tile_ui_create();

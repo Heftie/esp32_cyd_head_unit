@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYD Telemetry</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 24px; background: #10141b; color: #e6e9ef;
+         font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { color: #97a3b6; margin: 0 0 24px; }
+  table { border-collapse: collapse; width: 100%; max-width: 480px; margin-bottom: 32px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #232b38; }
+  th { color: #97a3b6; font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  td.value { font-variant-numeric: tabular-nums; color: #63b8b5; font-weight: 600; }
+  .empty { color: #97a3b6; padding: 8px 12px; }
+  section { max-width: 480px; margin-bottom: 32px; }
+  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #97a3b6; margin: 0 0 10px; }
+  input[type=date] { background: #1a212c; border: 1px solid #2a3444; color: #e6e9ef; border-radius: 6px; padding: 6px 10px; font: inherit; }
+  button, a.btn { background: #2a3444; border: 1px solid #3a4658; color: #e6e9ef; border-radius: 6px; padding: 6px 14px;
+         font: inherit; cursor: pointer; text-decoration: none; display: inline-block; }
+  button:hover, a.btn:hover { background: #34405480; }
+  pre { background: #161c26; border: 1px solid #232b38; border-radius: 8px; padding: 12px; overflow-x: auto;
+        font-size: 12.5px; max-height: 280px; }
+  .status { font-size: 12.5px; color: #97a3b6; }
+</style>
+</head>
+<body>
+  <h1>CYD Telemetry</h1>
+  <p class="sub">Live channel values from the companion MCU, polled every second.</p>
+
+  <table id="data-table">
+    <thead><tr><th>Channel</th><th>Value</th><th>Unit</th></tr></thead>
+    <tbody id="data-body"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+  </table>
+
+  <section>
+    <h2>History</h2>
+    <p><input type="date" id="history-date"> <button id="history-load">Load</button>
+       <a class="btn" href="/download">Download CSV</a></p>
+    <p class="status" id="history-status"></p>
+    <pre id="history-out"></pre>
+  </section>
+
+<script>
+async function refreshData() {
+  const body = document.getElementById('data-body');
+  try {
+    const res = await fetch('/api/data');
+    const rows = await res.json();
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="3" class="empty">No channels yet</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(r =>
+      `<tr><td>${r.name}</td><td class="value">${r.value.toFixed(2)}</td><td>${r.unit}</td></tr>`
+    ).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="3" class="empty">Fetch failed</td></tr>';
+  }
+}
+refreshData();
+setInterval(refreshData, 1000);
+
+document.getElementById('history-load').addEventListener('click', async () => {
+  const date = document.getElementById('history-date').value;
+  const status = document.getElementById('history-status');
+  const out = document.getElementById('history-out');
+  if (!date) { status.textContent = 'Pick a date first.'; return; }
+  status.textContent = 'Loading…';
+  out.textContent = '';
+  try {
+    const res = await fetch('/api/history?date=' + encodeURIComponent(date));
+    const body = await res.json();
+    if (!res.ok) {
+      status.textContent = body.error || ('HTTP ' + res.status);
+      return;
+    }
+    status.textContent = body.length + ' row(s)';
+    out.textContent = JSON.stringify(body, null, 2);
+  } catch (e) {
+    status.textContent = 'Fetch failed';
+  }
+});
+</script>
+</body>
+</html>

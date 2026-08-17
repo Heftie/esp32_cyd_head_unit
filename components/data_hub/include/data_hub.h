@@ -11,7 +11,11 @@ extern "C" {
 #define DATA_HUB_MAX_CHANNELS 16
 #define DATA_HUB_NAME_LEN     16
 #define DATA_HUB_UNIT_LEN     8
-#define DATA_HUB_HISTORY_LEN  128
+// logger flushes every 5-10s and SD is the long-term store now, so this
+// ring buffer only needs to bridge that gap, not hold real history. Also
+// the single biggest static RAM allocation in the whole binary (16
+// channels * old 128-deep buffer was ~80 KB) — keep it modest.
+#define DATA_HUB_HISTORY_LEN  32
 
 typedef struct {
     char name[DATA_HUB_NAME_LEN];

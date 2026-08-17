@@ -39,11 +39,17 @@ and `main/hardware.h` (`LCD_MIRROR_X`/`LCD_MIRROR_Y`).
 
 ## Architecture
 
-`main/main.c` is the app entry point and currently doubles as a scratch pad
-for UI experiments (multiple demo UIs — `multimeter_create_ui`,
-`touch_test_create_ui`, the RGB/counter demo — are defined side by side and
-swapped by commenting/uncommenting calls in `app_main`). When working here,
-follow the existing pattern rather than assuming one UI is "the" app.
+`main/main.c` is the app entry point. The default screen is a data-driven
+tile dashboard (`tile_ui_create()`) — one tile per `data_hub` channel,
+created on first sight and refreshed on an LVGL timer; nothing about the
+channel set is hardcoded. `touch_test_create_ui()` survives as a
+diagnostics screen (raw touch coordinates, useful after any hardware
+change), reachable via the dashboard's Settings button with a Back button
+to return. Both screens reuse the same `lv_scr_act()` object — `lv_obj_clean()`
+only removes children, not styles/layout applied directly to the screen, so
+each screen-creation function must reset anything it doesn't want leaking
+in from whichever screen ran before it (see the `LV_LAYOUT_NONE` reset at
+the top of `touch_test_create_ui()`).
 
 All hardware/pin configuration is centralized in `main/hardware.h` as
 `#define`s consumed by the `*_config_t` structs passed into each
@@ -57,15 +63,27 @@ rather than hardcoding GPIOs in the component.
 - **lcd** — brings up the SPI panel (ILI9341 or ST7789, selected by
   `CYD_ILI9341`) and registers it with `esp_lvgl_port` as an LVGL display.
   Also owns backlight brightness (LEDC-driven) and rotation.
-- **touch** — brings up the XPT2046 touch controller on its own SPI bus
-  (separate from the LCD's) and rescales raw touch coordinates onto the
-  display resolution before handing back an `esp_lcd_touch_handle_t` for
-  `esp_lvgl_port` to consume.
+- **touch** — brings up the XPT2046 touch controller *bit-banged over plain
+  GPIO* (`xpt2046_bitbang_io.c`), not a hardware SPI peripheral. It supplies
+  a fake `esp_lcd_panel_io_t` whose `rx_param` speaks the XPT2046's
+  register protocol by toggling GPIOs directly; the vendored
+  `esp_lcd_touch_xpt2046` driver runs completely unmodified on top of it,
+  since that driver only ever calls through `rx_param`. This exists so
+  SPI3 (VSPI) — touch's pins on stock CYD wiring — is entirely free for
+  `sd_storage` to own exclusively at full hardware clock, with no bus
+  arbitration between the two ever needed. Don't "optimize" touch back onto
+  real SPI without re-reading this — it would reintroduce exactly the
+  bus-sharing problem this design sidesteps.
 - **data_hub** — an in-memory pub/sub-style ring buffer keyed by channel
   name (e.g. `"VOLT:DC"`), storing recent samples with timestamps.
-  `data_hub_publish()` is called only by `uart_link`; UI code reads via
+  `data_hub_publish()` is called only by `uart_link`; UI/web code reads via
   `data_hub_get_latest()` / `data_hub_get_history()` /
-  `data_hub_list_channels()`. Not persisted — resets on reboot.
+  `data_hub_list_channels()`. Not persisted on its own — resets on reboot;
+  `logger` is what makes any of it durable. `DATA_HUB_HISTORY_LEN` is
+  deliberately small (32, not a "real" history depth) — it only needs to
+  bridge the gap to `logger`'s next flush, and it's the single largest
+  static RAM allocation in the firmware, so don't casually grow it back up
+  without checking the link still fits (see the DRAM budget note below).
 - **uart_link** — talks a small SCPI-style text protocol to a companion MCU
   over UART2: newline-terminated commands/replies. Handles a `*IDN?`
   handshake on init, answers some queries locally (see
@@ -75,18 +93,40 @@ rather than hardcoding GPIOs in the component.
   (single query in flight at a time, mutex-serialized).
 - **rgb_led** — drives the onboard 3-channel LED via LEDC PWM,
   0–255 per channel; channels set to `GPIO_NUM_NC` in config are skipped.
+  Currently just a boot-time color-cycle smoke test in `main.c` — not yet
+  wired to any real system state.
 - **sd_storage** — FAT-over-SDSPI wrapper around the microSD slot (path
-  read/write/erase/format, mount/unmount, capacity/free-space info). Can
-  share an already-initialized SPI bus (e.g. with `touch`, since both sit
-  on the same physical SPI lines on this board) via
-  `bus_already_initialized`, or bring up its own bus.
+  read/write/erase/format, mount/unmount, capacity/free-space info). Owns
+  SPI3 (VSPI) exclusively and permanently once mounted — see the `touch`
+  entry above for why that bus is free for it. `bus_already_initialized`
+  still exists in the config struct for a caller that's already brought up
+  the target SPI host itself, but nothing in this repo uses that path today.
+- **logger** — polls `data_hub` on a timer (default 5s) and appends any
+  samples not yet written to a single continuous CSV on the SD card
+  (`log.csv` — no per-day rotation) via `sd_storage`. Runs from its own
+  task rather than writing from inside `data_hub_publish()`, specifically
+  so a slow SD write (single-digit ms, but still) never blocks
+  `uart_link`'s RX task and risks dropping UART bytes.
+- **web_server** — brings up WiFi (station mode; SSID/password are Kconfig
+  options under "Web Server / WiFi", not hardcoded — see
+  `Kconfig.projbuild` — deliberately not full SoftAP/BLE provisioning yet,
+  that's a possible future phase), SNTP, and mDNS from a task pinned to
+  core 1 (the WiFi driver's own task defaults to core 0), then starts
+  `esp_http_server`. Serves an embedded dashboard at `/`, live channel
+  values as JSON at `/api/data`, per-day CSV rows at
+  `/api/history?date=YYYY-MM-DD`, and the raw log at `/download`. Since
+  `logger`'s timestamps are `esp_timer_get_time()` (boot-relative, not
+  wall-clock), `web_server` computes a `boot_epoch_offset_us` once SNTP
+  syncs and adds it to any stored timestamp to get a real date —
+  `/api/history` returns a JSON error (503) if SNTP hasn't synced yet
+  rather than guessing.
 
 Component dependencies are declared per-component in each
 `components/*/CMakeLists.txt` (`REQUIRES`/`PRIV_REQUIRES`) — check there
 before assuming what a component can call into. Managed third-party
-components (lvgl, esp_lvgl_port, esp_lcd_ili9341, esp_lcd_touch_xpt2046)
-are pulled via `idf_component.yml` manifests into `managed_components/`
-(vendored/generated — don't hand-edit).
+components (lvgl, esp_lvgl_port, esp_lcd_ili9341, esp_lcd_touch_xpt2046,
+mdns, cjson) are pulled via `idf_component.yml` manifests into
+`managed_components/` (vendored/generated — don't hand-edit).
 
 ### GPIO sharing note
 
@@ -94,6 +134,16 @@ are pulled via `idf_component.yml` manifests into `managed_components/`
 `RGB_LED_RED` — this is safe and intentional (GPIO 4 isn't wired to an
 actual display reset line on stock CYD boards; the comment in `hardware.h`
 and §1.1 of `ESP32-CYD-Pinout.md` explain why). Don't "fix" this by
-reassigning pins without reading that context first. Similarly, `touch` and
-`sd_storage` are expected to share one physical SPI bus — see
-`sd_storage_config_t.bus_already_initialized`.
+reassigning pins without reading that context first.
+
+### DRAM budget
+
+This board has no PSRAM, so static (`.bss`/`.data`) RAM is tight once WiFi
+is in the build — WiFi/lwip/mbedTLS's own static buffers plus LVGL's
+built-in memory pool (`CONFIG_LV_MEM_SIZE`, 64 KB) already consume most of
+it. `data_hub`'s channel table used to overflow the link on its own before
+`DATA_HUB_HISTORY_LEN` got trimmed down (see that component's entry above).
+If a future change needs more static RAM (bigger buffers, more channels),
+check `idf.py build`'s linker output actually still fits before assuming
+it's just a Kconfig/flash-size question — flash headroom (this partition
+table has plenty) and DRAM headroom are separate budgets.
