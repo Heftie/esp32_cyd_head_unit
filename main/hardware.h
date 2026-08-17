@@ -37,18 +37,28 @@
 #define TOUCH_Y_RES_MIN 0
 #define TOUCH_Y_RES_MAX 320
 
-#define TOUCH_CLOCK_HZ (1 * 1000 * 1000) // matches ESP_LCD_TOUCH_SPI_CLOCK_HZ, the xpt2046 driver's own default
-#define TOUCH_SPI      SPI3_HOST
+// Bit-banged over plain GPIO (see components/touch/xpt2046_bitbang_io.c),
+// not a hardware SPI peripheral — these pins were VSPI/SPI3 in the original
+// design, but freeing that peripheral is the whole point: it now belongs to
+// sd_storage alone, at full hardware clock, with nothing to share it with.
 #define TOUCH_SPI_CLK  (gpio_num_t) GPIO_NUM_25
 #define TOUCH_SPI_MOSI (gpio_num_t) GPIO_NUM_32
 #define TOUCH_SPI_MISO (gpio_num_t) GPIO_NUM_39
 #define TOUCH_CS       (gpio_num_t) GPIO_NUM_33
-#define TOUCH_DC       (gpio_num_t) GPIO_NUM_NC
 #define TOUCH_RST      (gpio_num_t) GPIO_NUM_NC
 #define TOUCH_IRQ      (gpio_num_t) GPIO_NUM_NC /* GPIO_NUM_36, XPT driver is working better (for me) without IRQ */
 
 #define TOUCH_MIRROR_X (true)
 #define TOUCH_MIRROR_Y (false)
+
+// MicroSD card slot (SPI, VSPI/SPI3 — exclusively; see the touch note
+// above). Wired to its own physical pins, separate from touch's old ones.
+#define SD_SPI_HOST     SPI3_HOST
+#define SD_SPI_CLK      (gpio_num_t) GPIO_NUM_18
+#define SD_SPI_MOSI     (gpio_num_t) GPIO_NUM_23
+#define SD_SPI_MISO     (gpio_num_t) GPIO_NUM_19
+#define SD_CS           (gpio_num_t) GPIO_NUM_5
+#define SD_MOUNT_POINT  "/sdcard"
 
 // UART link to companion MCU (SCPI-style text protocol, see components/uart_link)
 #define UART_LINK_TXD   GPIO_NUM_27

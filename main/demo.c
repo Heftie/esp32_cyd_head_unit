@@ -20,6 +20,8 @@
 #include "data_hub.h"
 #include "uart_link.h"
 #include "rgb_led.h"
+#include "sd_storage.h"
+#include "logger.h"
 
 static const char *TAG="demo";
 
@@ -264,15 +266,12 @@ void app_main(void)
     };
 
     const touch_config_t touch_hw_cfg = {
-        .spi_host = TOUCH_SPI,
         .spi_clk_gpio = TOUCH_SPI_CLK,
         .spi_mosi_gpio = TOUCH_SPI_MOSI,
         .spi_miso_gpio = TOUCH_SPI_MISO,
         .cs_gpio = TOUCH_CS,
-        .dc_gpio = TOUCH_DC,
         .rst_gpio = TOUCH_RST,
         .irq_gpio = TOUCH_IRQ,
-        .clock_hz = TOUCH_CLOCK_HZ,
         .h_res = LCD_H_RES,
         .v_res = LCD_V_RES,
         .mirror_x = TOUCH_MIRROR_X,
@@ -324,6 +323,38 @@ void app_main(void)
     };
     if (rgb_led_init(&rgb_led_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "rgb_led_init failed");
+    }
+
+    // Touch is bit-banged GPIO now (see components/touch), so SD gets SPI3
+    // to itself and can just stay mounted — no teardown/reacquire dance.
+    const sd_storage_config_t sd_cfg = {
+        .spi_host = SD_SPI_HOST,
+        .cs_gpio = SD_CS,
+        .bus_already_initialized = false,
+        .clk_gpio = SD_SPI_CLK,
+        .mosi_gpio = SD_SPI_MOSI,
+        .miso_gpio = SD_SPI_MISO,
+        .mount_point = SD_MOUNT_POINT,
+        .max_open_files = 0,
+        .format_if_mount_failed = false,
+    };
+    if (sd_storage_init(&sd_cfg) == ESP_OK) {
+        sd_storage_info_t info;
+        if (sd_storage_get_info(&info) == ESP_OK) {
+            ESP_LOGI(TAG, "sd_storage: %s, %llu MB total, %llu MB free", info.card_type,
+                     (unsigned long long)(info.total_bytes / (1024 * 1024)),
+                     (unsigned long long)(info.free_bytes / (1024 * 1024)));
+        }
+
+        const logger_config_t logger_cfg = {
+            .log_path = "log.csv",
+            .flush_interval_ms = 5000,
+        };
+        if (logger_init(&logger_cfg) != ESP_OK) {
+            ESP_LOGE(TAG, "logger_init failed");
+        }
+    } else {
+        ESP_LOGW(TAG, "sd_storage_init failed — no card, or wiring not verified yet");
     }
 
     touch_test_create_ui();

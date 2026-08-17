@@ -76,6 +76,10 @@ esp_err_t sd_storage_init(const sd_storage_config_t *config)
 
     sdmmc_host_t host_cfg = SDSPI_HOST_DEFAULT();
     host_cfg.slot = config->spi_host;
+    // Uncontended bus (see components/touch's bit-banged GPIO note) — push
+    // to the highest non-UHS SDSPI clock ESP-IDF exposes rather than the
+    // macro's default 20 MHz.
+    host_cfg.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
 
     sdspi_device_config_t slot_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_cfg.host_id = config->spi_host;
