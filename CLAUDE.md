@@ -107,13 +107,21 @@ rather than hardcoding GPIOs in the component.
   task rather than writing from inside `data_hub_publish()`, specifically
   so a slow SD write (single-digit ms, but still) never blocks
   `uart_link`'s RX task and risks dropping UART bytes.
-- **web_server** — brings up WiFi (station mode; SSID/password are Kconfig
-  options under "Web Server / WiFi", not hardcoded — see
-  `Kconfig.projbuild` — deliberately not full SoftAP/BLE provisioning yet,
-  that's a possible future phase), SNTP, and mDNS from a task pinned to
+- **web_server** — brings up WiFi, SNTP, and mDNS from a task pinned to
   core 1 (the WiFi driver's own task defaults to core 0), then starts
-  `esp_http_server`. Serves an embedded dashboard at `/`, live channel
-  values as JSON at `/api/data`, per-day CSV rows at
+  `esp_http_server`. WiFi credentials are never hardcoded or built into
+  the firmware: `wifi_provision.c` loads them from NVS at boot and tries
+  STA with a bounded wait (`WIFI_CONNECT_TIMEOUT_MS`); no stored
+  credentials, or no connection within that window, falls back to an open
+  SoftAP (`CYD-Setup-XXXX`) plus a hand-rolled captive-portal DNS responder
+  (answers every query with the AP's own IP) and a setup page — submitting
+  it writes to NVS via `wifi_provision_save()` and reboots, so the normal
+  boot path picks the new credentials up. `esp_netif_create_default_wifi_ap()`
+  must only ever be called once per boot (it asserts on a duplicate netif
+  key) — it belongs solely to `wifi_provision_start_ap()`, not to
+  `web_server.c`'s own bring-up, even speculatively.
+  Once connected, serves an embedded dashboard at `/`, live channel values
+  as JSON at `/api/data`, per-day CSV rows at
   `/api/history?date=YYYY-MM-DD`, and the raw log at `/download`. Since
   `logger`'s timestamps are `esp_timer_get_time()` (boot-relative, not
   wall-clock), `web_server` computes a `boot_epoch_offset_us` once SNTP

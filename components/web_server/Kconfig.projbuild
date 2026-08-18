@@ -1,24 +1,16 @@
 menu "Web Server / WiFi"
 
-    config WEB_SERVER_WIFI_SSID
-        string "WiFi SSID"
-        default ""
-        help
-            SSID of the network the device connects to as a station.
-
-    config WEB_SERVER_WIFI_PASSWORD
-        string "WiFi Password"
-        default ""
-        help
-            WPA2 password for the network above. Lives in sdkconfig, which
-            this repo gitignores — set via idf.py menuconfig, never
-            hardcoded into a tracked source file.
-
     config WEB_SERVER_MDNS_HOSTNAME
         string "mDNS hostname"
         default "cyd-logger"
         help
             Device answers at http://<hostname>.local on the LAN once
             connected.
+
+            WiFi network credentials are not configured here — they're
+            provisioned at runtime (SoftAP + captive portal on first boot
+            or whenever the stored network can't be reached; see
+            components/web_server/wifi_provision.c) and stored in NVS on
+            the device, never in this build.
 
 endmenu

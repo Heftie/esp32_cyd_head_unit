@@ -6,6 +6,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/event_groups.h>
 
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -20,6 +21,7 @@
 
 #include "data_hub.h"
 #include "sd_storage.h"
+#include "wifi_provision.h"
 
 static const char *TAG = "web_server";
 
@@ -31,6 +33,8 @@ static const char *TAG = "web_server";
 #define WIFI_BRINGUP_STACK   4096
 #define WIFI_BRINGUP_PRIO    5
 #define WIFI_BRINGUP_CORE    1 // Wi-Fi driver task defaults to core 0
+#define WIFI_CONNECT_TIMEOUT_MS 20000
+#define WIFI_CONNECTED_BIT   (1 << 0)
 
 #define HISTORY_READ_CHUNK   512
 #define HISTORY_LINE_MAX     96
@@ -47,6 +51,7 @@ static volatile bool s_time_synced = false;
 
 static httpd_handle_t s_httpd;
 static uint16_t s_http_port;
+static EventGroupHandle_t s_wifi_event_group;
 
 // --- Wi-Fi / SNTP / mDNS bring-up ------------------------------------------
 
@@ -87,6 +92,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     }
     ip_event_got_ip_t *evt = (ip_event_got_ip_t *)data;
     ESP_LOGI(TAG, "got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
+    xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
     // Only the first connection needs to bring these up; reconnects after a
     // drop don't need a fresh mDNS/httpd instance.
@@ -111,12 +117,22 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     }
 }
 
+// Boot flow: load credentials from NVS (see wifi_provision.c) and try
+// STA with a bounded wait. No stored credentials, or no connection within
+// that window, falls back to a SoftAP + captive portal so the network can
+// be (re)configured from a phone — no rebuild/reflash, no credentials in
+// any file this repo tracks or even builds from.
 static void wifi_bringup_task(void *arg)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    s_wifi_event_group = xEventGroupCreate();
+
     esp_netif_create_default_wifi_sta();
+    // AP netif is created lazily by wifi_provision_start_ap() only if we
+    // actually fall back to it — creating it here unconditionally races
+    // wifi_provision.c's own call and asserts (duplicate netif key).
 
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_cfg));
@@ -124,20 +140,36 @@ static void wifi_bringup_task(void *arg)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, ip_event_handler, NULL));
 
-    wifi_config_t sta_cfg = { 0 };
-    strncpy((char *)sta_cfg.sta.ssid, CONFIG_WEB_SERVER_WIFI_SSID, sizeof(sta_cfg.sta.ssid) - 1);
-    strncpy((char *)sta_cfg.sta.password, CONFIG_WEB_SERVER_WIFI_PASSWORD, sizeof(sta_cfg.sta.password) - 1);
+    char ssid[33] = {0};
+    char pass[65] = {0};
+    if (wifi_provision_load(ssid, sizeof(ssid), pass, sizeof(pass))) {
+        ESP_LOGI(TAG, "found stored credentials for \"%s\", connecting", ssid);
 
-    if (sta_cfg.sta.ssid[0] == '\0') {
-        ESP_LOGW(TAG, "no WiFi SSID configured (idf.py menuconfig -> Web Server / WiFi) — staying offline");
-        vTaskDelete(NULL);
-        return;
+        wifi_config_t sta_cfg = { 0 };
+        strncpy((char *)sta_cfg.sta.ssid, ssid, sizeof(sta_cfg.sta.ssid) - 1);
+        strncpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password) - 1);
+
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+        ESP_ERROR_CHECK(esp_wifi_start());
+
+        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                                                pdFALSE, pdTRUE, pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
+        if (bits & WIFI_CONNECTED_BIT) {
+            vTaskDelete(NULL);
+            return; // SNTP/mDNS/httpd already kicked off from ip_event_handler
+        }
+
+        ESP_LOGW(TAG, "could not connect to \"%s\" within %d ms, falling back to setup AP",
+                 ssid, WIFI_CONNECT_TIMEOUT_MS);
+        esp_wifi_stop();
+    } else {
+        ESP_LOGW(TAG, "no stored WiFi credentials, starting setup AP");
     }
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
+    if (wifi_provision_start_ap() != ESP_OK) {
+        ESP_LOGE(TAG, "wifi_provision_start_ap failed");
+    }
     vTaskDelete(NULL);
 }
 
