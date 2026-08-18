@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <lvgl.h>
 #include <esp_lvgl_port.h>
@@ -9,6 +10,7 @@
 #include "data_hub.h"
 #include "measurement_screen.h"
 #include "screen_nav.h"
+#include "web_server.h"
 
 typedef struct {
     char name[DATA_HUB_NAME_LEN];
@@ -19,6 +21,7 @@ static channel_tile_t s_tiles[DATA_HUB_MAX_CHANNELS];
 static size_t s_tile_count;
 static lv_obj_t *s_tile_container;
 static lv_obj_t *s_empty_label;
+static lv_obj_t *s_clock_label;
 static lv_timer_t *s_tile_refresh_timer;
 static bool s_tile_screen_active;
 
@@ -78,7 +81,28 @@ static void tile_ui_refresh_timer_cb(lv_timer_t *timer)
     data_hub_channel_info_t channels[DATA_HUB_MAX_CHANNELS];
     size_t n = data_hub_list_channels(channels, DATA_HUB_MAX_CHANNELS);
 
+    // DD/MM/YYYY HH:MM:SS — always this format, not locale-dependent,
+    // per how this device's owner reads dates. UTC, same as every other
+    // timestamp in this firmware (see set_time_screen.c/web_server.c).
+    // Sized well above what the format string can ever actually need
+    // (max 19 chars + NUL) — GCC's -Wformat-truncation can't tell
+    // tm_year/tm_mday/etc. are bounded and assumes worst-case %d width
+    // for a 24-byte buffer, which trips -Werror.
+    char clock_buf[80];
+    time_t now;
+    if (web_server_get_wall_clock(&now)) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        snprintf(clock_buf, sizeof(clock_buf), "%02d/%02d/%04d %02d:%02d:%02d",
+                 tm_utc.tm_mday, tm_utc.tm_mon + 1, tm_utc.tm_year + 1900,
+                 tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+    } else {
+        snprintf(clock_buf, sizeof(clock_buf), "Time not set");
+    }
+
     lvgl_port_lock(0);
+
+    lv_label_set_text(s_clock_label, clock_buf);
 
     if (n > 0) {
         lv_obj_add_flag(s_empty_label, LV_OBJ_FLAG_HIDDEN);
@@ -137,6 +161,16 @@ void tiles_screen_create(void)
     lv_obj_t *lbl_settings = lv_label_create(btn_settings);
     lv_label_set_text(lbl_settings, "Settings");
     lv_obj_center(lbl_settings);
+
+    lv_obj_t *clock_bar = lv_obj_create(scr);
+    lv_obj_remove_style_all(clock_bar);
+    lv_obj_set_size(clock_bar, lv_pct(100), 20);
+    lv_obj_set_style_pad_hor(clock_bar, 8, 0);
+
+    s_clock_label = lv_label_create(clock_bar);
+    lv_label_set_text(s_clock_label, "Time not set");
+    lv_obj_set_style_text_color(s_clock_label, lv_color_hex(0x888888), 0);
+    lv_obj_align(s_clock_label, LV_ALIGN_LEFT_MID, 0, 0);
 
     s_tile_container = lv_obj_create(scr);
     lv_obj_remove_style_all(s_tile_container);

@@ -49,6 +49,7 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 // or SNTP came up, since esp_timer's clock started at the same boot.
 static volatile int64_t s_boot_epoch_offset_us = 0;
 static volatile bool s_time_synced = false;
+static volatile web_server_time_source_t s_time_source = WEB_SERVER_TIME_UNSET;
 
 // WiFi status for UI consumers (web_server_get_status()). Written once per
 // bring-up outcome from wifi_bringup_task/ip_event_handler (WiFi task/event
@@ -69,6 +70,7 @@ static void sntp_sync_cb(struct timeval *tv)
     int64_t epoch_us = (int64_t)tv->tv_sec * 1000000LL + tv->tv_usec;
     s_boot_epoch_offset_us = epoch_us - esp_timer_get_time();
     s_time_synced = true;
+    s_time_source = WEB_SERVER_TIME_NTP;
     ESP_LOGI(TAG, "SNTP synced");
 }
 
@@ -478,6 +480,36 @@ void web_server_get_status(web_server_status_t *out)
     strncpy(out->ip, s_wifi_ip, sizeof(out->ip) - 1);
     out->ip[sizeof(out->ip) - 1] = '\0';
     out->time_synced = s_time_synced;
+    out->time_source = s_time_source;
+}
+
+void web_server_sync_ntp_now(void)
+{
+    // esp_netif_sntp_start() restarts the client if it's already running
+    // (it was started once from start_sntp() after the first STA
+    // connect), forcing a fresh attempt right now instead of waiting for
+    // its own poll interval. sntp_sync_cb() fires and sets
+    // WEB_SERVER_TIME_NTP the same way it would on any other sync.
+    esp_netif_sntp_start();
+}
+
+bool web_server_get_wall_clock(time_t *out_epoch_utc)
+{
+    if (!s_time_synced) {
+        return false;
+    }
+    int64_t epoch_us = esp_timer_get_time() + s_boot_epoch_offset_us;
+    *out_epoch_utc = (time_t)(epoch_us / 1000000);
+    return true;
+}
+
+void web_server_set_wall_clock(time_t epoch_utc)
+{
+    int64_t epoch_us = (int64_t)epoch_utc * 1000000LL;
+    s_boot_epoch_offset_us = epoch_us - esp_timer_get_time();
+    s_time_synced = true;
+    s_time_source = WEB_SERVER_TIME_MANUAL;
+    ESP_LOGI(TAG, "wall clock set manually");
 }
 
 static void forget_wifi_task(void *arg)

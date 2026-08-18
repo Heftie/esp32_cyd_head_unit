@@ -53,28 +53,33 @@ one screen calling another's constructor directly: `screen_register(name,
 create_fn)` in `ui_init()`, then `screen_push(name)` to enter a screen
 (remembering where you came from) and `screen_pop()` to return to it,
 falling back to `SCREEN_HOME` ("tiles") if the back stack is empty — this
-is how `touch_test_screen`'s own Back button can just call `screen_pop()`
-and correctly land wherever it was actually entered from, without knowing
-or caring who that was. Each screen is its own file
-(`tiles_screen.c`/`settings_screen.c`/`touch_test_screen.c`/
-`measurement_screen.c`), talking to the others only by name through
-`screen_nav.h` — the one exception is `measurement_screen_set_channel()`,
-a small setter `tiles_screen.c` calls before `screen_push("measurement")`
-so the single measurement-screen instance knows which channel to show,
-since `screen_push()` itself only takes a name.
+is how e.g. `sd_info_screen`'s Back button can just call `screen_pop()`
+and correctly land back on `settings` without knowing or caring that
+that's where it was entered from. Each screen is its own file
+(`tiles_screen.c`/`settings_screen.c`/`measurement_screen.c`/
+`set_time_screen.c`/`sd_info_screen.c`), talking to the others only by
+name through `screen_nav.h` — the one exception is
+`measurement_screen_set_channel()`, a small setter `tiles_screen.c` calls
+before `screen_push("measurement")` so the single measurement-screen
+instance knows which channel to show, since `screen_push()` itself only
+takes a name.
 
-- **tiles** (default/home) — a data-driven dashboard, one tile per
-  `data_hub` channel, created on first sight and refreshed on an LVGL
-  timer; nothing about the channel set is hardcoded. Tapping a tile opens
-  **measurement** for that channel; its Settings button pushes **settings**.
-- **settings** — WiFi status (mode/SSID/IP/time-sync, from
-  `web_server_get_status()`, polled on its own LVGL timer), a "Forget
-  network" action (`web_server_forget_wifi()`, which erases the stored
-  credentials and reboots) gated behind a tap-to-arm/tap-to-confirm
-  sequence since it's a one-way trip off the current network, and a
-  button into **touch_test**.
-- **touch_test** — diagnostics screen (raw touch coordinates, useful
-  after any hardware change); reachable only from **settings**.
+- **tiles** (default/home) — a DD/MM/YYYY HH:MM:SS UTC clock (from
+  `web_server_get_wall_clock()`; "Time not set" until NTP or a manual set
+  lands) over a data-driven dashboard, one tile per `data_hub` channel,
+  created on first sight and refreshed on an LVGL timer; nothing about the
+  channel set is hardcoded. Tapping a tile opens **measurement** for that
+  channel; its Settings button pushes **settings**.
+- **settings** — WiFi status (mode/SSID/IP/time source, from
+  `web_server_get_status()`, polled on its own LVGL timer); a "Sync NTP"
+  button (`web_server_sync_ntp_now()`) that forces an immediate resync
+  attempt — the way back to `WEB_SERVER_TIME_NTP` after a manual set, once
+  the network can reach an NTP server again; a "Forget network" action
+  (`web_server_forget_wifi()`, which erases the stored credentials and
+  reboots) gated behind a tap-to-arm/tap-to-confirm sequence since it's a
+  one-way trip off the current network; and buttons into **set_time** and
+  **sd_info**. Sync/Forget are both greyed out (non-clickable) outside STA
+  mode — neither means anything while running the setup AP.
 - **measurement** — multimeter-style detail view for one channel: current
   value at large scale, plus running MIN/MAX/AVG since a Start press and a
   Reset. The MIN/MAX/AVG accumulator lives entirely in this screen, not in
@@ -82,13 +87,25 @@ since `screen_push()` itself only takes a name.
   `DATA_HUB_HISTORY_LEN` (32) samples deep, meant to bridge to `logger`'s
   next flush, not hold a real run's worth of history, and it keeps
   overwriting itself regardless of this screen's Start/Reset state.
+- **set_time** — manual UTC wall-clock entry via five `lv_roller`s
+  (year/month/day/hour/minute) and a Set button, feeding
+  `web_server_set_wall_clock()`. Exists because this board has no
+  battery-backed RTC crystal: `web_server`'s wall clock normally comes
+  only from SNTP and resets to unset every boot, and a network with no
+  path to an NTP server otherwise leaves `/api/history` permanently 503
+  with no way to recover. Converts the roller selections to a UTC epoch
+  via a small `days_from_civil()` helper (Howard Hinnant's constant-time
+  civil-calendar algorithm) rather than libc's `timegm()`/`mktime()`, to
+  not depend on a timezone-aware libc build for something this firmware
+  treats as UTC-only everywhere else anyway.
+- **sd_info** — `sd_storage_is_mounted()` / `sd_storage_get_info()` read
+  out as mounted/not, card type, capacity, used/free space, polled on its
+  own LVGL timer; reachable only from **settings**.
 
-All four screens reuse the same `lv_scr_act()` object — `lv_obj_clean()`
+All five screens reuse the same `lv_scr_act()` object — `lv_obj_clean()`
 only removes children, not styles/layout applied directly to the screen,
 so each screen-creation function must reset anything it doesn't want
-leaking in from whichever screen ran before it (see the `LV_LAYOUT_NONE`
-reset at the top of `touch_test_screen_create()`, the one screen using
-absolute positioning instead of flex layout). Every container in a
+leaking in from whichever screen ran before it. Every container in a
 screen's layout gets an explicit width/height (or `flex_grow`) — an
 earlier draft of the measurement screen left one container unsized and let
 a long label wrap onto extra lines, which silently pushed content off the
@@ -175,26 +192,42 @@ rather than hardcoding GPIOs in the component.
   wall-clock), `web_server` computes a `boot_epoch_offset_us` once SNTP
   syncs and adds it to any stored timestamp to get a real date —
   `/api/history` returns a JSON error (503) if SNTP hasn't synced yet
-  rather than guessing. `web_server_get_status()` hands the current WiFi
-  mode/SSID/IP/time-sync state to non-HTTP callers (`components/ui`'s
-  settings screen) without them reaching into WiFi driver state directly;
-  those fields are written once per bring-up outcome from the WiFi
-  task/event handlers and read back without a lock, same convention as
-  `boot_epoch_offset_us` above. `web_server_forget_wifi()` erases the
-  stored credentials via `wifi_provision_clear()` and reboots — the only
-  other way off a bad network is finding the captive portal again, which
-  requires already being off it.
+  rather than guessing. This board has no battery-backed RTC crystal, so
+  `boot_epoch_offset_us` is the *only* wall clock the firmware has, and it
+  resets to unset on every boot; `web_server_set_wall_clock()` lets a
+  caller (`components/ui`'s set_time screen) set it manually, the same
+  way `sntp_sync_cb()` would, for when there's no network path to an NTP
+  server at all. `web_server_get_status()` hands the current WiFi
+  mode/SSID/IP/time-source (`WEB_SERVER_TIME_UNSET`/`_NTP`/`_MANUAL`)
+  state to non-HTTP callers (`components/ui`'s settings screen) without
+  them reaching into WiFi driver state directly; those fields are written
+  once per bring-up outcome from the WiFi task/event handlers and read
+  back without a lock, same convention as `boot_epoch_offset_us` above —
+  a manual set simply overwrites them the same way, and a later SNTP sync
+  (network recovers) overwrites a manual one right back, since NTP is
+  always the preferred source when it's available —
+  `web_server_sync_ntp_now()` (`esp_netif_sntp_start()`, which restarts
+  the client if already running) forces that recovery attempt immediately
+  rather than waiting for the client's own poll interval.
+  `web_server_get_wall_clock()` reads the current time back out (boot-
+  relative `esp_timer_get_time()` plus `boot_epoch_offset_us`) for a UI
+  clock display; false if neither source has landed yet.
+  `web_server_forget_wifi()` erases the stored credentials via
+  `wifi_provision_clear()` and reboots —
+  the only other way off a bad network is finding the captive portal
+  again, which requires already being off it.
 - **ui** — every screen and the navigation framework between them; see
   the Architecture section above for the full breakdown. Depends on
-  `data_hub` (tiles, measurement) and `web_server` (settings) to read
-  state, but never on `lcd`/`touch`/`uart_link`/`rgb_led`/`sd_storage`/
-  `logger` — hardware bring-up stays in `main.c`, and screens only ever
-  reach data through the two hub-style components that exist precisely to
-  decouple UI from hardware specifics. `screen_nav.h` and each screen's
-  own header live at the component root, not `include/` — they're
-  internal to `components/ui` (only `include/ui.h`'s `ui_init()` is
-  public), matching how `wifi_provision.h` sits alongside `web_server.c`
-  rather than in that component's `include/`.
+  `data_hub` (tiles, measurement), `web_server` (tiles' clock, settings,
+  set_time), and `sd_storage` (sd_info — read-only status/info calls
+  only, never mount/write/erase) to read state, but never on
+  `lcd`/`touch`/`uart_link`/`rgb_led`/`logger` — hardware bring-up stays
+  in `main.c`, and screens only ever reach data through hub-style
+  components that exist precisely to decouple UI from hardware specifics.
+  `screen_nav.h` and each screen's own header live at the component root,
+  not `include/` — they're internal to `components/ui` (only
+  `include/ui.h`'s `ui_init()` is public), matching how `wifi_provision.h`
+  sits alongside `web_server.c` rather than in that component's `include/`.
 
 Component dependencies are declared per-component in each
 `components/*/CMakeLists.txt` (`REQUIRES`/`PRIV_REQUIRES`) — check there

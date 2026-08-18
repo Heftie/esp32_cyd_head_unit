@@ -1,4 +1,4 @@
-idf_component_register(SRCS "ui.c" "screen_nav.c" "touch_test_screen.c" "settings_screen.c" "tiles_screen.c" "measurement_screen.c"
+idf_component_register(SRCS "ui.c" "screen_nav.c" "settings_screen.c" "tiles_screen.c" "measurement_screen.c" "set_time_screen.c" "sd_info_screen.c"
                     INCLUDE_DIRS "include"
-                    PRIV_REQUIRES lvgl__lvgl espressif__esp_lvgl_port data_hub web_server
+                    PRIV_REQUIRES lvgl__lvgl espressif__esp_lvgl_port data_hub web_server sd_storage
                     )
