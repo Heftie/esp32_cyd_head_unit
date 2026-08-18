@@ -39,35 +39,65 @@ and `main/hardware.h` (`LCD_MIRROR_X`/`LCD_MIRROR_Y`).
 
 ## Architecture
 
-`main/main.c` is the app entry point. Screens are switched through a small
-name-based registry rather than one screen calling another's constructor
-directly: `screen_register(name, create_fn)` at boot, then
-`screen_push(name)` to enter a screen (remembering where you came from) and
-`screen_pop()` to return to it, falling back to `SCREEN_HOME` ("tiles") if
-the back stack is empty — this is how `touch_test`'s own Back button can
-just call `screen_pop()` and correctly land wherever it was actually
-entered from, without knowing or caring who that was. The default screen
-is a data-driven tile dashboard (`tile_ui_create()`, registered as
-`"tiles"`) — one tile per `data_hub` channel, created on first sight and
-refreshed on an LVGL timer; nothing about the channel set is hardcoded.
-Its Settings button pushes `"settings"` (`settings_create_ui()`): a WiFi
-status screen (mode/SSID/IP/time-sync, from `web_server_get_status()`,
-polled on its own LVGL timer), a "Forget network" action
-(`web_server_forget_wifi()`, which erases the stored credentials and
-reboots) gated behind a tap-to-arm/tap-to-confirm sequence since it's a
-one-way trip off the current network, and a button into
-`touch_test_create_ui()` (registered as `"touch_test"`) — the diagnostics
-screen (raw touch coordinates, useful after any hardware change) that used
-to hang directly off the dashboard's Settings button before this screen
-existed. All three screens reuse the same `lv_scr_act()` object —
-`lv_obj_clean()` only removes children, not styles/layout applied directly
-to the screen, so each screen-creation function must reset anything it
-doesn't want leaking in from whichever screen ran before it (see the
-`LV_LAYOUT_NONE` reset at the top of `touch_test_create_ui()`, the one
-screen using absolute positioning instead of flex layout). Add a new
-screen by writing its create function and calling `screen_register()` for
-it in `app_main()` — no other call site needs to change unless something
-should navigate to it.
+`main/main.c` is the app entry point: it brings up the LCD/touch panel,
+initializes every data-producing component (`data_hub`, `uart_link`,
+`rgb_led`, `sd_storage`, `logger`, `web_server`), then hands off to
+`ui_init()` and settles into a loop that cycles the status LED and
+periodically dumps `data_hub` to the log. It owns hardware bring-up only —
+no screen, LVGL widget, or navigation logic lives in `main.c` itself.
+
+All screen/LVGL-UI code lives in `components/ui`, which `main.c` reaches
+only through `ui_init()` (`include/ui.h`). Screens switch through a small
+name-based registry (`screen_nav.c`, private to the component) rather than
+one screen calling another's constructor directly: `screen_register(name,
+create_fn)` in `ui_init()`, then `screen_push(name)` to enter a screen
+(remembering where you came from) and `screen_pop()` to return to it,
+falling back to `SCREEN_HOME` ("tiles") if the back stack is empty — this
+is how `touch_test_screen`'s own Back button can just call `screen_pop()`
+and correctly land wherever it was actually entered from, without knowing
+or caring who that was. Each screen is its own file
+(`tiles_screen.c`/`settings_screen.c`/`touch_test_screen.c`/
+`measurement_screen.c`), talking to the others only by name through
+`screen_nav.h` — the one exception is `measurement_screen_set_channel()`,
+a small setter `tiles_screen.c` calls before `screen_push("measurement")`
+so the single measurement-screen instance knows which channel to show,
+since `screen_push()` itself only takes a name.
+
+- **tiles** (default/home) — a data-driven dashboard, one tile per
+  `data_hub` channel, created on first sight and refreshed on an LVGL
+  timer; nothing about the channel set is hardcoded. Tapping a tile opens
+  **measurement** for that channel; its Settings button pushes **settings**.
+- **settings** — WiFi status (mode/SSID/IP/time-sync, from
+  `web_server_get_status()`, polled on its own LVGL timer), a "Forget
+  network" action (`web_server_forget_wifi()`, which erases the stored
+  credentials and reboots) gated behind a tap-to-arm/tap-to-confirm
+  sequence since it's a one-way trip off the current network, and a
+  button into **touch_test**.
+- **touch_test** — diagnostics screen (raw touch coordinates, useful
+  after any hardware change); reachable only from **settings**.
+- **measurement** — multimeter-style detail view for one channel: current
+  value at large scale, plus running MIN/MAX/AVG since a Start press and a
+  Reset. The MIN/MAX/AVG accumulator lives entirely in this screen, not in
+  `data_hub` — `data_hub`'s own ring buffer is only
+  `DATA_HUB_HISTORY_LEN` (32) samples deep, meant to bridge to `logger`'s
+  next flush, not hold a real run's worth of history, and it keeps
+  overwriting itself regardless of this screen's Start/Reset state.
+
+All four screens reuse the same `lv_scr_act()` object — `lv_obj_clean()`
+only removes children, not styles/layout applied directly to the screen,
+so each screen-creation function must reset anything it doesn't want
+leaking in from whichever screen ran before it (see the `LV_LAYOUT_NONE`
+reset at the top of `touch_test_screen_create()`, the one screen using
+absolute positioning instead of flex layout). Every container in a
+screen's layout gets an explicit width/height (or `flex_grow`) — an
+earlier draft of the measurement screen left one container unsized and let
+a long label wrap onto extra lines, which silently pushed content off the
+bottom of the display; screens also explicitly clear
+`LV_OBJ_FLAG_SCROLLABLE` where a layout bug should be visible clipping
+rather than an invisible scroll. Add a new screen by writing its create
+function in a new file and calling `screen_register()` for it in
+`ui_init()` — no other call site needs to change unless something should
+navigate to it.
 
 All hardware/pin configuration is centralized in `main/hardware.h` as
 `#define`s consumed by the `*_config_t` structs passed into each
@@ -146,14 +176,25 @@ rather than hardcoding GPIOs in the component.
   syncs and adds it to any stored timestamp to get a real date —
   `/api/history` returns a JSON error (503) if SNTP hasn't synced yet
   rather than guessing. `web_server_get_status()` hands the current WiFi
-  mode/SSID/IP/time-sync state to non-HTTP callers (the LVGL settings
-  screen in `main.c`) without them reaching into WiFi driver state
-  directly; those fields are written once per bring-up outcome from the
-  WiFi task/event handlers and read back without a lock, same convention
-  as `boot_epoch_offset_us` above. `web_server_forget_wifi()` erases the
+  mode/SSID/IP/time-sync state to non-HTTP callers (`components/ui`'s
+  settings screen) without them reaching into WiFi driver state directly;
+  those fields are written once per bring-up outcome from the WiFi
+  task/event handlers and read back without a lock, same convention as
+  `boot_epoch_offset_us` above. `web_server_forget_wifi()` erases the
   stored credentials via `wifi_provision_clear()` and reboots — the only
   other way off a bad network is finding the captive portal again, which
   requires already being off it.
+- **ui** — every screen and the navigation framework between them; see
+  the Architecture section above for the full breakdown. Depends on
+  `data_hub` (tiles, measurement) and `web_server` (settings) to read
+  state, but never on `lcd`/`touch`/`uart_link`/`rgb_led`/`sd_storage`/
+  `logger` — hardware bring-up stays in `main.c`, and screens only ever
+  reach data through the two hub-style components that exist precisely to
+  decouple UI from hardware specifics. `screen_nav.h` and each screen's
+  own header live at the component root, not `include/` — they're
+  internal to `components/ui` (only `include/ui.h`'s `ui_init()` is
+  public), matching how `wifi_provision.h` sits alongside `web_server.c`
+  rather than in that component's `include/`.
 
 Component dependencies are declared per-component in each
 `components/*/CMakeLists.txt` (`REQUIRES`/`PRIV_REQUIRES`) — check there
