@@ -9,6 +9,7 @@
 #include <freertos/event_groups.h>
 
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
@@ -48,6 +49,14 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 // or SNTP came up, since esp_timer's clock started at the same boot.
 static volatile int64_t s_boot_epoch_offset_us = 0;
 static volatile bool s_time_synced = false;
+
+// WiFi status for UI consumers (web_server_get_status()). Written once per
+// bring-up outcome from wifi_bringup_task/ip_event_handler (WiFi task/event
+// context), read from wherever a UI polls it — no lock, same convention as
+// s_boot_epoch_offset_us/s_time_synced above.
+static volatile web_server_wifi_mode_t s_wifi_mode = WEB_SERVER_WIFI_CONNECTING;
+static char s_wifi_ssid[33] = {0};
+static char s_wifi_ip[16] = {0};
 
 static httpd_handle_t s_httpd;
 static uint16_t s_http_port;
@@ -92,6 +101,8 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     }
     ip_event_got_ip_t *evt = (ip_event_got_ip_t *)data;
     ESP_LOGI(TAG, "got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
+    snprintf(s_wifi_ip, sizeof(s_wifi_ip), IPSTR, IP2STR(&evt->ip_info.ip));
+    s_wifi_mode = WEB_SERVER_WIFI_STA;
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
     // Only the first connection needs to bring these up; reconnects after a
@@ -144,6 +155,7 @@ static void wifi_bringup_task(void *arg)
     char pass[65] = {0};
     if (wifi_provision_load(ssid, sizeof(ssid), pass, sizeof(pass))) {
         ESP_LOGI(TAG, "found stored credentials for \"%s\", connecting", ssid);
+        strncpy(s_wifi_ssid, ssid, sizeof(s_wifi_ssid) - 1);
 
         wifi_config_t sta_cfg = { 0 };
         strncpy((char *)sta_cfg.sta.ssid, ssid, sizeof(sta_cfg.sta.ssid) - 1);
@@ -167,8 +179,14 @@ static void wifi_bringup_task(void *arg)
         ESP_LOGW(TAG, "no stored WiFi credentials, starting setup AP");
     }
 
-    if (wifi_provision_start_ap() != ESP_OK) {
+    char ap_ssid[33] = {0};
+    char ap_ip[16] = {0};
+    if (wifi_provision_start_ap(ap_ssid, sizeof(ap_ssid), ap_ip, sizeof(ap_ip)) != ESP_OK) {
         ESP_LOGE(TAG, "wifi_provision_start_ap failed");
+    } else {
+        strncpy(s_wifi_ssid, ap_ssid, sizeof(s_wifi_ssid) - 1);
+        strncpy(s_wifi_ip, ap_ip, sizeof(s_wifi_ip) - 1);
+        s_wifi_mode = WEB_SERVER_WIFI_AP;
     }
     vTaskDelete(NULL);
 }
@@ -450,4 +468,29 @@ esp_err_t web_server_init(const web_server_config_t *config)
                                              WIFI_BRINGUP_STACK, NULL, WIFI_BRINGUP_PRIO,
                                              NULL, WIFI_BRINGUP_CORE);
     return (ok == pdPASS) ? ESP_OK : ESP_FAIL;
+}
+
+void web_server_get_status(web_server_status_t *out)
+{
+    out->wifi_mode = s_wifi_mode;
+    strncpy(out->ssid, s_wifi_ssid, sizeof(out->ssid) - 1);
+    out->ssid[sizeof(out->ssid) - 1] = '\0';
+    strncpy(out->ip, s_wifi_ip, sizeof(out->ip) - 1);
+    out->ip[sizeof(out->ip) - 1] = '\0';
+    out->time_synced = s_time_synced;
+}
+
+static void forget_wifi_task(void *arg)
+{
+    // Give the caller's UI time to show feedback ("Forgetting...") before
+    // esp_restart() tears the whole board down — same reasoning as
+    // wifi_provision.c's reboot_task after a portal form submit.
+    vTaskDelay(pdMS_TO_TICKS(600));
+    wifi_provision_clear();
+    esp_restart();
+}
+
+void web_server_forget_wifi(void)
+{
+    xTaskCreate(forget_wifi_task, "wifi_forget", 2048, NULL, 5, NULL);
 }

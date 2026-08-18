@@ -4,3 +4,4 @@ sdkconfig.old
 dependencies.lock
 build/
 managed_components
+activate_idf.sh

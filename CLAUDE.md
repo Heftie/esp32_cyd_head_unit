@@ -16,7 +16,7 @@ you change `main/hardware.h`'s pin assignments.
 ## Build / flash / monitor
 
 This is a standard ESP-IDF project — use `idf.py` from an ESP-IDF v6.x
-environment (`. $IDF_PATH/export.sh` or the VS Code IDF extension; this repo
+environment (` . '/home/heftie/.espressif/tools/activate_idf_v6.0.2.sh'` or the VS Code IDF extension; this repo
 targets `esp32` per `sdkconfig.defaults`).
 
 ```sh
@@ -39,17 +39,35 @@ and `main/hardware.h` (`LCD_MIRROR_X`/`LCD_MIRROR_Y`).
 
 ## Architecture
 
-`main/main.c` is the app entry point. The default screen is a data-driven
-tile dashboard (`tile_ui_create()`) — one tile per `data_hub` channel,
-created on first sight and refreshed on an LVGL timer; nothing about the
-channel set is hardcoded. `touch_test_create_ui()` survives as a
-diagnostics screen (raw touch coordinates, useful after any hardware
-change), reachable via the dashboard's Settings button with a Back button
-to return. Both screens reuse the same `lv_scr_act()` object — `lv_obj_clean()`
-only removes children, not styles/layout applied directly to the screen, so
-each screen-creation function must reset anything it doesn't want leaking
-in from whichever screen ran before it (see the `LV_LAYOUT_NONE` reset at
-the top of `touch_test_create_ui()`).
+`main/main.c` is the app entry point. Screens are switched through a small
+name-based registry rather than one screen calling another's constructor
+directly: `screen_register(name, create_fn)` at boot, then
+`screen_push(name)` to enter a screen (remembering where you came from) and
+`screen_pop()` to return to it, falling back to `SCREEN_HOME` ("tiles") if
+the back stack is empty — this is how `touch_test`'s own Back button can
+just call `screen_pop()` and correctly land wherever it was actually
+entered from, without knowing or caring who that was. The default screen
+is a data-driven tile dashboard (`tile_ui_create()`, registered as
+`"tiles"`) — one tile per `data_hub` channel, created on first sight and
+refreshed on an LVGL timer; nothing about the channel set is hardcoded.
+Its Settings button pushes `"settings"` (`settings_create_ui()`): a WiFi
+status screen (mode/SSID/IP/time-sync, from `web_server_get_status()`,
+polled on its own LVGL timer), a "Forget network" action
+(`web_server_forget_wifi()`, which erases the stored credentials and
+reboots) gated behind a tap-to-arm/tap-to-confirm sequence since it's a
+one-way trip off the current network, and a button into
+`touch_test_create_ui()` (registered as `"touch_test"`) — the diagnostics
+screen (raw touch coordinates, useful after any hardware change) that used
+to hang directly off the dashboard's Settings button before this screen
+existed. All three screens reuse the same `lv_scr_act()` object —
+`lv_obj_clean()` only removes children, not styles/layout applied directly
+to the screen, so each screen-creation function must reset anything it
+doesn't want leaking in from whichever screen ran before it (see the
+`LV_LAYOUT_NONE` reset at the top of `touch_test_create_ui()`, the one
+screen using absolute positioning instead of flex layout). Add a new
+screen by writing its create function and calling `screen_register()` for
+it in `app_main()` — no other call site needs to change unless something
+should navigate to it.
 
 All hardware/pin configuration is centralized in `main/hardware.h` as
 `#define`s consumed by the `*_config_t` structs passed into each
@@ -127,7 +145,15 @@ rather than hardcoding GPIOs in the component.
   wall-clock), `web_server` computes a `boot_epoch_offset_us` once SNTP
   syncs and adds it to any stored timestamp to get a real date —
   `/api/history` returns a JSON error (503) if SNTP hasn't synced yet
-  rather than guessing.
+  rather than guessing. `web_server_get_status()` hands the current WiFi
+  mode/SSID/IP/time-sync state to non-HTTP callers (the LVGL settings
+  screen in `main.c`) without them reaching into WiFi driver state
+  directly; those fields are written once per bring-up outcome from the
+  WiFi task/event handlers and read back without a lock, same convention
+  as `boot_epoch_offset_us` above. `web_server_forget_wifi()` erases the
+  stored credentials via `wifi_provision_clear()` and reboots — the only
+  other way off a bad network is finding the captive portal again, which
+  requires already being off it.
 
 Component dependencies are declared per-component in each
 `components/*/CMakeLists.txt` (`REQUIRES`/`PRIV_REQUIRES`) — check there

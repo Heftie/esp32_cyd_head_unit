@@ -1,6 +1,7 @@
 #include "wifi_provision.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -65,6 +66,26 @@ esp_err_t wifi_provision_save(const char *ssid, const char *pass)
         err = nvs_commit(h);
     }
     nvs_close(h);
+    return err;
+}
+
+esp_err_t wifi_provision_clear(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    // ESP_ERR_NVS_NOT_FOUND just means it was already clear — not a failure
+    // for a "make sure there are no stored credentials" call.
+    esp_err_t ssid_err = nvs_erase_key(h, NVS_KEY_SSID);
+    esp_err_t pass_err = nvs_erase_key(h, NVS_KEY_PASS);
+    err = nvs_commit(h);
+    nvs_close(h);
+
+    if (ssid_err != ESP_OK && ssid_err != ESP_ERR_NVS_NOT_FOUND) return ssid_err;
+    if (pass_err != ESP_OK && pass_err != ESP_ERR_NVS_NOT_FOUND) return pass_err;
     return err;
 }
 
@@ -225,7 +246,7 @@ static esp_err_t portal_catchall_handler(httpd_req_t *req)
     return portal_root_handler(req);
 }
 
-esp_err_t wifi_provision_start_ap(void)
+esp_err_t wifi_provision_start_ap(char *ssid_out, size_t ssid_out_len, char *ip_out, size_t ip_out_len)
 {
     esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
 
@@ -252,6 +273,14 @@ esp_err_t wifi_provision_start_ap(void)
     esp_netif_get_ip_info(ap_netif, &ip_info);
     ESP_LOGI(TAG, "provisioning AP \"%s\" up (open) — connect and browse to any address, or " IPSTR,
              (char *)ap_cfg.ap.ssid, IP2STR(&ip_info.ip));
+
+    if (ssid_out != NULL && ssid_out_len > 0) {
+        strncpy(ssid_out, (char *)ap_cfg.ap.ssid, ssid_out_len - 1);
+        ssid_out[ssid_out_len - 1] = '\0';
+    }
+    if (ip_out != NULL && ip_out_len > 0) {
+        snprintf(ip_out, ip_out_len, IPSTR, IP2STR(&ip_info.ip));
+    }
 
     xTaskCreate(dns_hijack_task, "dns_hijack", 3072, (void *)(uintptr_t)ip_info.ip.addr, 5, NULL);
 
