@@ -223,6 +223,34 @@ esp_err_t sd_storage_erase(const char *path)
     return ESP_OK;
 }
 
+esp_err_t sd_storage_rename(const char *old_path, const char *new_path)
+{
+    if (!s_mounted) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char old_full[SD_STORAGE_PATH_LEN];
+    char new_full[SD_STORAGE_PATH_LEN];
+    esp_err_t err = build_path(old_path, old_full, sizeof(old_full));
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = build_path(new_path, new_full, sizeof(new_full));
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    remove(new_full); // clear any stale target — see header comment
+    int ret = rename(old_full, new_full);
+    xSemaphoreGive(s_mutex);
+
+    if (ret != 0) {
+        return (errno == ENOENT) ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
 esp_err_t sd_storage_format(void)
 {
     if (!s_mounted) {

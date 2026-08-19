@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <freertos/FreeRTOS.h>
@@ -152,6 +153,19 @@ void app_main(void)
         ESP_LOGE(TAG, "rgb_led_init failed");
     }
 
+    // One-shot boot self-test: each channel individually, so a dead LED
+    // or wiring fault is visible once at boot. The loop below takes over
+    // afterward as a steady status indicator — the LED's job settled
+    // between "decorative smoke test" and "means something", not both
+    // running forever (see CLAUDE.md's rgb_led entry).
+    rgb_led_set_rgb(0xFF, 0x00, 0x00);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    rgb_led_set_rgb(0x00, 0xFF, 0x00);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    rgb_led_set_rgb(0x00, 0x00, 0xFF);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    rgb_led_set_rgb(0x00, 0x00, 0x00);
+
     // Touch is bit-banged GPIO now (see components/touch), so SD gets SPI3
     // to itself and can just stay mounted — no teardown/reacquire dance.
     const sd_storage_config_t sd_cfg = {
@@ -196,28 +210,25 @@ void app_main(void)
 
     ui_init();
 
+    // Status indicator: green once both the companion MCU and the SD
+    // card are present, red if neither is, yellow (both channels on) for
+    // one but not the other. WiFi isn't part of this — that's already
+    // visible on the settings screen, and a 3-color LED runs out of
+    // clean states fast once you're trying to encode more than two
+    // independent yes/no signals in it.
     uint32_t loop_count = 0;
-    uint32_t led_counter = 0;
     while (1)
     {
-        led_counter += 1;
-        switch (led_counter)
-        {
-        case 1:
-            rgb_led_set_rgb(0xFF, 0x00, 0x00);
-            break;
-        case 20:
+        bool mcu_ok = uart_link_mcu_present();
+        bool sd_ok = sd_storage_is_mounted();
+
+        if (mcu_ok && sd_ok) {
             rgb_led_set_rgb(0x00, 0xFF, 0x00);
-            break;
-        case 30:
-            rgb_led_set_rgb(0x00, 0x00, 0xFF);
-            break;
-
-        default:
-
-            break;
+        } else if (mcu_ok || sd_ok) {
+            rgb_led_set_rgb(0xFF, 0xFF, 0x00);
+        } else {
+            rgb_led_set_rgb(0xFF, 0x00, 0x00);
         }
-        if (led_counter > 40) led_counter = 0;
 
         if (++loop_count % 20 == 0) {
             dump_data_hub_channels();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -26,6 +27,13 @@ esp_err_t uart_link_init(const uart_link_config_t *config);
 // at a time; a concurrent caller waits up to timeout_ms for its turn, then
 // up to timeout_ms again for its own reply.
 esp_err_t uart_link_query(const char *cmd, char *reply_buf, size_t reply_buf_len, uint32_t timeout_ms);
+
+// True once the MCU has been heard from at least once — either the boot
+// *IDN? handshake got a reply, or any push line has arrived since. Never
+// goes back to false (no "MCU went away" detection; that would need a
+// timeout/liveness concept this link doesn't have). Intended for a
+// coarse "is anything even connected" status indicator, e.g. rgb_led.
+bool uart_link_mcu_present(void);
 
 #ifdef __cplusplus
 }

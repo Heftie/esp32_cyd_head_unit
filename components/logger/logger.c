@@ -13,9 +13,11 @@
 
 static const char *TAG = "logger";
 
-#define LOGGER_LOG_PATH_LEN       64
+#define LOGGER_LOG_PATH_LEN        64
 #define LOGGER_DEFAULT_INTERVAL_MS 5000
-#define LOGGER_CHUNK_BYTES        8192 // holds a full DATA_HUB_HISTORY_LEN catch-up in one write
+#define LOGGER_DEFAULT_MAX_BYTES   (5 * 1024 * 1024)
+#define LOGGER_CHUNK_BYTES         8192 // holds a full DATA_HUB_HISTORY_LEN catch-up in one write
+#define LOGGER_CSV_HEADER          "timestamp_us,channel,value,unit\n"
 
 typedef struct {
     char name[DATA_HUB_NAME_LEN];
@@ -25,7 +27,9 @@ typedef struct {
 static logger_channel_state_t s_state[DATA_HUB_MAX_CHANNELS];
 static size_t s_state_count;
 static char s_log_path[LOGGER_LOG_PATH_LEN];
+static char s_backup_path[LOGGER_LOG_PATH_LEN];
 static uint32_t s_flush_interval_ms;
+static uint32_t s_max_file_bytes;
 
 // Channels are only ever added, matching data_hub's own append-only table —
 // so a plain linear scan over this small array is enough to track "have we
@@ -94,6 +98,42 @@ static size_t flush_channel(const char *name)
     return written;
 }
 
+// Single-generation rotation: once s_log_path crosses s_max_file_bytes,
+// it becomes s_backup_path (overwriting any older backup) and a fresh
+// s_log_path starts with just the header row. Runs after a flush rather
+// than before, so the file can briefly overshoot s_max_file_bytes by up
+// to one flush's worth of writes (bounded by LOGGER_CHUNK_BYTES per
+// channel) — a soft cap, not a hard one, which is fine for what this is
+// guarding against (unbounded growth, not a precise size limit).
+static void rotate_if_needed(void)
+{
+    size_t size;
+    if (!sd_storage_file_size(s_log_path, &size) || size < s_max_file_bytes) {
+        return;
+    }
+
+    if (sd_storage_rename(s_log_path, s_backup_path) != ESP_OK) {
+        ESP_LOGW(TAG, "rotation of '%s' failed, letting it keep growing", s_log_path);
+        return;
+    }
+
+    if (sd_storage_write(s_log_path, LOGGER_CSV_HEADER, sizeof(LOGGER_CSV_HEADER) - 1, false) != ESP_OK) {
+        ESP_LOGE(TAG, "failed to start new '%s' after rotation", s_log_path);
+        return;
+    }
+
+    // Every channel's "already logged" bookmark refers to timestamps
+    // that now live in the rotated-away backup — reset it so nothing
+    // from data_hub's ring buffer is silently skipped in the new file.
+    // This can duplicate up to one flush's worth of rows across the
+    // rotation seam (already in the backup, now also in the new file)
+    // rather than trying to track a per-file cursor — an acceptable
+    // trade for a hobby-scale CSV log.
+    s_state_count = 0;
+
+    ESP_LOGI(TAG, "rotated '%s' -> '%s' (was %u bytes)", s_log_path, s_backup_path, (unsigned)size);
+}
+
 static void logger_task(void *arg)
 {
     while (1) {
@@ -109,6 +149,8 @@ static void logger_task(void *arg)
             ESP_LOGI(TAG, "flushed %u row(s) across %u channel(s) to '%s'",
                      (unsigned)total_written, (unsigned)n, s_log_path);
         }
+
+        rotate_if_needed();
     }
 }
 
@@ -127,11 +169,16 @@ esp_err_t logger_init(const logger_config_t *config)
     strncpy(s_log_path, config->log_path, sizeof(s_log_path) - 1);
     s_log_path[sizeof(s_log_path) - 1] = '\0';
     s_flush_interval_ms = config->flush_interval_ms ? config->flush_interval_ms : LOGGER_DEFAULT_INTERVAL_MS;
+    s_max_file_bytes = config->max_file_bytes ? config->max_file_bytes : LOGGER_DEFAULT_MAX_BYTES;
     s_state_count = 0;
 
+    int n = snprintf(s_backup_path, sizeof(s_backup_path), "%s.1", s_log_path);
+    if (n < 0 || (size_t)n >= sizeof(s_backup_path)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     if (!sd_storage_exists(s_log_path)) {
-        static const char header[] = "timestamp_us,channel,value,unit\n";
-        esp_err_t err = sd_storage_write(s_log_path, header, sizeof(header) - 1, false);
+        esp_err_t err = sd_storage_write(s_log_path, LOGGER_CSV_HEADER, sizeof(LOGGER_CSV_HEADER) - 1, false);
         if (err != ESP_OK) {
             return err;
         }

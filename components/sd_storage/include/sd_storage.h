@@ -60,6 +60,13 @@ esp_err_t sd_storage_read(const char *path, size_t offset, void *buf, size_t buf
 // Deletes a single file.
 esp_err_t sd_storage_erase(const char *path);
 
+// Renames/moves a file (both paths relative to the mount point). If
+// new_path already exists it's overwritten first — FATFS's rename() isn't
+// atomic-replace, so a stale target would otherwise make this fail with
+// nothing renamed. Intended for logger.c's single-generation log rotation
+// (current file -> ".1" backup, overwriting any older backup).
+esp_err_t sd_storage_rename(const char *old_path, const char *new_path);
+
 // Wipes the whole card and re-creates a fresh, empty FAT filesystem.
 // Irreversible.
 esp_err_t sd_storage_format(void);

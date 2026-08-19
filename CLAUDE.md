@@ -158,19 +158,32 @@ rather than hardcoding GPIOs in the component.
   (single query in flight at a time, mutex-serialized).
 - **rgb_led** — drives the onboard 3-channel LED via LEDC PWM,
   0–255 per channel; channels set to `GPIO_NUM_NC` in config are skipped.
-  Currently just a boot-time color-cycle smoke test in `main.c` — not yet
-  wired to any real system state.
+  `main.c` runs each channel individually once at boot as a wiring
+  self-test, then hands the LED a permanent job: green once
+  `uart_link_mcu_present()` and `sd_storage_is_mounted()` are both true,
+  yellow if only one is, red if neither is. WiFi status isn't folded in —
+  it's already visible on the settings screen, and a 3-color LED runs out
+  of clean states fast past two independent yes/no signals.
 - **sd_storage** — FAT-over-SDSPI wrapper around the microSD slot (path
-  read/write/erase/format, mount/unmount, capacity/free-space info). Owns
-  SPI3 (VSPI) exclusively and permanently once mounted — see the `touch`
-  entry above for why that bus is free for it. `bus_already_initialized`
-  still exists in the config struct for a caller that's already brought up
-  the target SPI host itself, but nothing in this repo uses that path today.
+  read/write/erase/format, rename, mount/unmount, capacity/free-space
+  info). Owns SPI3 (VSPI) exclusively and permanently once mounted — see
+  the `touch` entry above for why that bus is free for it.
+  `bus_already_initialized` still exists in the config struct for a
+  caller that's already brought up the target SPI host itself, but
+  nothing in this repo uses that path today.
 - **logger** — polls `data_hub` on a timer (default 5s) and appends any
-  samples not yet written to a single continuous CSV on the SD card
-  (`log.csv` — no per-day rotation) via `sd_storage`. Runs from its own
-  task rather than writing from inside `data_hub_publish()`, specifically
-  so a slow SD write (single-digit ms, but still) never blocks
+  samples not yet written to a CSV on the SD card (`log.csv`) via
+  `sd_storage`. Once `log.csv` crosses `max_file_bytes` (default 5 MB),
+  it rotates: the current file becomes `log.csv.1` (`sd_storage_rename()`,
+  overwriting any older backup) and a fresh `log.csv` starts from just the
+  header row — single generation, not a full logrotate scheme, since this
+  is a hobby-scale device. Rotation resets every channel's "already
+  logged" bookmark, which can duplicate up to one flush's worth of rows
+  across the seam (already in the backup, now also in the new file)
+  rather than tracking a per-file cursor — an accepted trade for staying
+  simple. Runs from its own task rather than writing from inside
+  `data_hub_publish()`, specifically so a slow SD write (single-digit ms,
+  but still) never blocks
   `uart_link`'s RX task and risks dropping UART bytes.
 - **web_server** — brings up WiFi, SNTP, and mDNS from a task pinned to
   core 1 (the WiFi driver's own task defaults to core 0), then starts

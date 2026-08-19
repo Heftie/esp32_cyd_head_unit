@@ -29,6 +29,7 @@ static SemaphoreHandle_t s_reply_ready_sem;
 static volatile bool s_query_pending;
 static char *s_reply_buf;
 static size_t s_reply_buf_len;
+static volatile bool s_mcu_present;
 
 typedef struct {
     const char *query;
@@ -61,6 +62,8 @@ static bool try_answer_locally(const char *line)
 // then value and unit separated by a comma. Unit is optional.
 static void handle_push(const char *line)
 {
+    s_mcu_present = true; // any push line at all is evidence something's out there
+
     const char *sep = strchr(line, ' ');
     if (sep == NULL || sep == line) {
         ESP_LOGD(TAG, "dropping unparseable push: '%s'", line);
@@ -216,6 +219,7 @@ esp_err_t uart_link_init(const uart_link_config_t *config)
     char idn[64];
     esp_err_t err = uart_link_query("*IDN?", idn, sizeof(idn), UART_LINK_BOOT_HANDSHAKE_TIMEOUT_MS);
     if (err == ESP_OK) {
+        s_mcu_present = true;
         ESP_LOGI(TAG, "MCU present: %s", idn);
     } else {
         ESP_LOGW(TAG, "no *IDN? reply within %d ms — MCU not detected",
@@ -223,4 +227,9 @@ esp_err_t uart_link_init(const uart_link_config_t *config)
     }
 
     return ESP_OK;
+}
+
+bool uart_link_mcu_present(void)
+{
+    return s_mcu_present;
 }
