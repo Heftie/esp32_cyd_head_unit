@@ -40,11 +40,25 @@ and `main/hardware.h` (`LCD_MIRROR_X`/`LCD_MIRROR_Y`).
 ## Architecture
 
 `main/main.c` is the app entry point: it brings up the LCD/touch panel,
-initializes every data-producing component (`data_hub`, `uart_link`,
-`rgb_led`, `sd_storage`, `logger`, `web_server`), then hands off to
-`ui_init()` and settles into a loop that cycles the status LED and
-periodically dumps `data_hub` to the log. It owns hardware bring-up only —
-no screen, LVGL widget, or navigation logic lives in `main.c` itself.
+then `data_hub` (the one hard prerequisite `ui_init()` has —
+`data_hub_list_channels()` takes a mutex that's NULL before
+`data_hub_init()` runs), then `ui_init()` itself — deliberately before
+`uart_link`, `rgb_led`, `sd_storage`/`logger`, and `web_server`, so the
+screen is up and showing something before any of those, several of
+which are slow or can fail outright (UART's `*IDN?` handshake waits up
+to 500ms, `web_server`'s WiFi connect can take up to 20s before falling
+back to its setup AP). Every screen reads those subsystems only through
+its own refresh timer, via plain static-default reads
+(`uart_link_mcu_present()`/`sd_storage_is_mounted()`/
+`logger_is_running()` all default false, `web_server_get_wall_clock()`
+returns false until synced) that are safe to see before that
+subsystem's own `_init()` has run — so a screen just shows "not there
+yet" (or, on `tiles`, a "SD card not mounted" banner) until each one
+catches up, rather than the whole UI waiting behind whichever is
+slowest. `main.c` then finishes bringing up the rest and settles into a
+loop that cycles the status LED and periodically dumps `data_hub` to
+the log. It owns hardware bring-up only — no screen, LVGL widget, or
+navigation logic lives in `main.c` itself.
 
 All screen/LVGL-UI code lives in `components/ui`, which `main.c` reaches
 only through `ui_init()` (`include/ui.h`). Screens switch through a small
@@ -68,13 +82,20 @@ measurement/graph screen instance knows which channel to show, since
 
 - **tiles** (default/home) — a DD/MM/YYYY HH:MM:SS UTC clock (from
   `web_server_get_wall_clock()`; "Time not set" until NTP or a manual set
-  lands), a Start log/Stop log toggle (`logger_is_running()` /
-  `logger_start(NULL)` / `logger_stop()`), over a data-driven dashboard,
-  one tile per `data_hub` channel, created on first sight and refreshed on
-  an LVGL timer; nothing about the channel set is hardcoded. Tapping a
-  tile opens **measurement** for that channel; long-pressing it opens
-  **graph** for that channel instead; its Settings button pushes
-  **settings**.
+  lands), a Start log/Stop log toggle, a "SD card not mounted" banner
+  (only visible when `sd_storage_is_mounted()` is false — hidden objects
+  take no space in a flex column, so it doesn't reserve a blank row while
+  the card's fine), over a data-driven dashboard, one tile per `data_hub`
+  channel, created on first sight and refreshed on an LVGL timer; nothing
+  about the channel set is hardcoded. Starting from here always names a
+  fresh file after the current wall clock
+  (`YYYYMMDD_HHMMSS_log.csv`, via `logger_start(name)`) rather than
+  resuming whatever was last active — this is the "just start logging"
+  quick action, so each press begins its own dated session; falls back
+  to `logger_start(NULL)` (keep whatever file is already set) only if
+  wall clock isn't available yet. Tapping a tile opens **measurement**
+  for that channel; long-pressing it opens **graph** for that channel
+  instead; its Settings button pushes **settings**.
 - **settings** — WiFi status (mode/SSID/IP/time source, from
   `web_server_get_status()`, polled on its own LVGL timer); a "Sync NTP"
   button (`web_server_sync_ntp_now()`) that forces an immediate resync

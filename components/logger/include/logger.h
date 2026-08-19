@@ -17,10 +17,10 @@ typedef struct {
 
 // Creates the logger task (wakes every flush_interval_ms, walks data_hub's
 // channels, and appends any samples not yet written to the current log
-// path as CSV rows: "timestamp_us,channel,value,unit") and immediately
-// starts it logging to config->log_path — equivalent to logger_init()
-// followed by logger_start(NULL). Requires sd_storage to already be
-// mounted.
+// path as CSV rows: "timestamp_us,channel,value,unit"), idle until a
+// caller explicitly calls logger_start() — this does NOT start logging
+// on its own, so nothing gets written to the card until the user presses
+// Start/Use in the UI. Requires sd_storage to already be mounted.
 //
 // The current file grows without bound otherwise, so once it crosses
 // max_file_bytes the task rotates it: the current file becomes

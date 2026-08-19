@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include <lvgl.h>
 #include <esp_lvgl_port.h>
 
@@ -34,6 +37,7 @@ static char s_delete_armed_name[SD_STORAGE_NAME_LEN];
 static lv_timer_t *s_delete_disarm_timer;
 static bool s_clear_armed;
 static lv_timer_t *s_clear_disarm_timer;
+static volatile bool s_clear_in_progress;
 
 static void log_manager_refresh_files(void);
 
@@ -105,6 +109,36 @@ static void log_manager_clear_disarm_cb(lv_timer_t *timer)
     lv_label_set_text(s_clear_label, "Clear SD card");
 }
 
+// sd_storage_format() on a real card can take several seconds — running it
+// straight from the click callback would block the whole esp_lvgl_port task
+// (redraw + touch input both stall) until it returns, which froze the
+// screen right at "Tap again to confirm" the one time this was tried on
+// real hardware, since the "Clearing..." label update never got a chance
+// to actually paint before the block. Runs on its own task instead, and
+// only touches LVGL objects through lvgl_port_lock()/unlock() since it's
+// no longer running on the LVGL task itself.
+static void log_manager_clear_task(void *arg)
+{
+    logger_stop();
+    sd_storage_format();
+
+    // s_screen_active is written from the LVGL task (log_manager_back_cb)
+    // and read here from this task without a lock — same informal
+    // convention web_server.c uses for its own cross-task status fields
+    // (see its comment on boot_epoch_offset_us). Worst case is one stale
+    // read; skipping the UI touch is always safe, unlike writing into
+    // whatever screen's now active if the user already left this one.
+    if (s_screen_active) {
+        lvgl_port_lock(0);
+        lv_label_set_text(s_clear_label, "Clear SD card");
+        lvgl_port_unlock();
+        log_manager_refresh_files();
+    }
+
+    s_clear_in_progress = false;
+    vTaskDelete(NULL);
+}
+
 // Stops logging first — sd_storage_format() wipes the card out from
 // under whatever file logger thinks it's still appending to, and this
 // way logger_is_running() correctly reads false afterward (matching
@@ -112,6 +146,10 @@ static void log_manager_clear_disarm_cb(lv_timer_t *timer)
 // recreating a headerless file on the next flush.
 static void log_manager_clear_cb(lv_event_t *e)
 {
+    if (s_clear_in_progress) {
+        return;
+    }
+
     if (!s_clear_armed) {
         s_clear_armed = true;
         lv_label_set_text(s_clear_label, "Tap again to confirm");
@@ -125,10 +163,9 @@ static void log_manager_clear_cb(lv_event_t *e)
         s_clear_disarm_timer = NULL;
     }
     lv_label_set_text(s_clear_label, "Clearing...");
-    logger_stop();
-    sd_storage_format();
     s_clear_armed = false;
-    log_manager_refresh_files();
+    s_clear_in_progress = true;
+    xTaskCreate(log_manager_clear_task, "log_clear", 3072, NULL, 4, NULL);
 }
 
 static void log_manager_refresh_files(void)

@@ -229,14 +229,12 @@ esp_err_t logger_init(const logger_config_t *config)
         return ESP_ERR_INVALID_SIZE;
     }
 
-    // logger_start(NULL) writes the header if s_log_path doesn't exist
-    // yet and sets s_running — same "start immediately" behavior this
-    // function always had, just routed through the shared helper.
-    esp_err_t err = logger_start(NULL);
-    if (err != ESP_OK) {
-        return err;
-    }
-
+    // s_running stays false (its .bss default) until a caller explicitly
+    // calls logger_start() — the tiles screen's Start button or the
+    // log-manager screen's Use button. No auto-start at boot, so a
+    // session's timestamped filename (chosen by the caller, once wall
+    // clock is available) reflects when logging was actually started,
+    // not when the board happened to power on.
     BaseType_t ok = xTaskCreate(logger_task, "logger", 4096, NULL, 4, NULL);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "failed to create logger task");

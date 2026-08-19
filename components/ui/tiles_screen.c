@@ -12,6 +12,7 @@
 #include "logger.h"
 #include "measurement_screen.h"
 #include "screen_nav.h"
+#include "sd_storage.h"
 #include "web_server.h"
 
 typedef struct {
@@ -26,17 +27,37 @@ static lv_obj_t *s_empty_label;
 static lv_obj_t *s_clock_label;
 static lv_obj_t *s_logging_btn;
 static lv_obj_t *s_logging_label;
+static lv_obj_t *s_sd_error_label;
 static lv_timer_t *s_tile_refresh_timer;
 static bool s_tile_screen_active;
 
-// Resumes/pauses the already-running logger task — naming a new log file
-// is the log-manager screen's job (§14 of the architecture doc), not
-// this quick toggle's. logger_start(NULL) just means "keep using
-// whatever file it's already on."
+// Starting from here always names a fresh file after the current wall
+// clock (YYYYMMDD_HHMMSS_log.csv) rather than reusing whatever was last
+// active — this is the "just start logging" quick action, so each press
+// begins its own dated session; log-manager remains the place to pick a
+// persistent/custom name instead. Falls back to logger_start(NULL)
+// (keep whatever file is already set) only if wall clock isn't
+// available yet — no network path to NTP and no manual set_time entry.
 static void tile_logging_toggle_cb(lv_event_t *e)
 {
     if (logger_is_running()) {
         logger_stop();
+        return;
+    }
+
+    time_t now;
+    if (web_server_get_wall_clock(&now)) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        // Sized well above what the format string can ever actually need
+        // (max 24 chars + NUL) — GCC's -Wformat-truncation can't tell
+        // tm_year/tm_mon/etc. are bounded and assumes worst-case %d
+        // width, same false positive as the clock label above.
+        char name[80];
+        snprintf(name, sizeof(name), "%04d%02d%02d_%02d%02d%02d_log.csv",
+                 tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                 tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        logger_start(name);
     } else {
         logger_start(NULL);
     }
@@ -130,6 +151,7 @@ static void tile_ui_refresh_timer_cb(lv_timer_t *timer)
     }
 
     bool logging = logger_is_running();
+    bool sd_ok = sd_storage_is_mounted();
 
     lvgl_port_lock(0);
 
@@ -137,6 +159,16 @@ static void tile_ui_refresh_timer_cb(lv_timer_t *timer)
 
     lv_label_set_text(s_logging_label, logging ? "Stop log" : "Start log");
     lv_obj_set_style_bg_color(s_logging_btn, logging ? lv_color_hex(0x3F7A4C) : lv_color_hex(0x444444), 0);
+
+    // Surfaces what used to only be a serial log line ("sd_storage_init
+    // failed") — this board has no serial access in normal use, so a
+    // mount failure (missing card, bad wiring, corrupted filesystem) was
+    // otherwise invisible from the device itself.
+    if (sd_ok) {
+        lv_obj_add_flag(s_sd_error_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(s_sd_error_label, LV_OBJ_FLAG_HIDDEN);
+    }
 
     if (n > 0) {
         lv_obj_add_flag(s_empty_label, LV_OBJ_FLAG_HIDDEN);
@@ -213,6 +245,15 @@ void tiles_screen_create(void)
     s_logging_label = lv_label_create(s_logging_btn);
     lv_label_set_text(s_logging_label, "Start log");
     lv_obj_center(s_logging_label);
+
+    // Hidden objects take no space in a flex column (LVGL skips them
+    // during layout), so this doesn't reserve a blank row while the
+    // card is mounted fine — the common case.
+    s_sd_error_label = lv_label_create(scr);
+    lv_label_set_text(s_sd_error_label, "SD card not mounted");
+    lv_obj_set_style_text_color(s_sd_error_label, lv_color_hex(0xE05C5C), 0);
+    lv_obj_set_style_pad_hor(s_sd_error_label, 8, 0);
+    lv_obj_add_flag(s_sd_error_label, LV_OBJ_FLAG_HIDDEN);
 
     s_tile_container = lv_obj_create(scr);
     lv_obj_remove_style_all(s_tile_container);

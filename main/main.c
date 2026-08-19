@@ -129,6 +129,18 @@ void app_main(void)
 
     data_hub_init();
 
+    // Shown as early as possible, before any of the slower/fallible
+    // hardware bring-up below (UART handshake, SD mount, WiFi negotiation
+    // — the latter alone can take up to 20s falling back to the setup
+    // AP). data_hub_init() above is this call's only hard prerequisite —
+    // every other subsystem the screens read from (uart_link, sd_storage,
+    // logger, web_server) is polled through their own refresh timers via
+    // plain static-default reads (mcu_present=false, mounted=false,
+    // running=false, wall clock unset) that are safe to see before that
+    // subsystem's own _init() has even run, so the tiles/settings/etc.
+    // screens just show "not there yet" until each one catches up.
+    ui_init();
+
     const uart_link_config_t uart_cfg = {
         .uart_num = UART_NUM_2,
         .txd_gpio = UART_LINK_TXD,
@@ -207,8 +219,6 @@ void app_main(void)
     if (web_server_init(&web_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "web_server_init failed");
     }
-
-    ui_init();
 
     // Status indicator: green once both the companion MCU and the SD
     // card are present, red if neither is, yellow (both channels on) for
