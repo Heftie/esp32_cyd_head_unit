@@ -278,7 +278,21 @@ rather than hardcoding GPIOs in the component.
   an SD read) and renders one `/download?file=` link per row — this is
   the web equivalent of the on-device **log_manager** screen, though only
   **log_manager** can rename/delete/switch files or clear the card; the
-  web side is read/download-only. Since `logger`'s timestamps are
+  web side is read/download-only. The dashboard's "Live Graph" section
+  is the web analog of **graph**/**graph_config** — a per-channel line
+  chart drawn on a `<canvas>` with plain JS (no charting library) — but
+  sourced entirely client-side: it's fed off the same `/api/data` poll
+  the table above it already runs, appending each poll's samples to a
+  per-channel in-memory array (capped at 300 points, ~5 min at the 1s
+  poll rate) that resets to empty on every page load. Nothing is sent to
+  or stored on the device for this — deliberately, since the ESP32 has no
+  spare static RAM for another history buffer (see the DRAM budget note),
+  and the point is to graph exactly what this browser tab has observed
+  during its own session, not to reconstruct history from the card
+  (that's what `/api/history` is for). Channels populate the picker
+  dynamically from whatever `/api/data` has reported so far, same
+  "nothing hardcoded" approach as `data_hub`'s channel table.
+  Since `logger`'s timestamps are
   `esp_timer_get_time()` (boot-relative, not wall-clock), `web_server`
   computes a `boot_epoch_offset_us` once SNTP
   syncs and adds it to any stored timestamp to get a real date —
