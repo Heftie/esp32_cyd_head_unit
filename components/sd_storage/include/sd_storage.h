@@ -37,6 +37,13 @@ typedef struct {
     uint64_t free_bytes;          // filesystem free space
 } sd_storage_info_t;
 
+#define SD_STORAGE_NAME_LEN 64
+
+typedef struct {
+    char name[SD_STORAGE_NAME_LEN]; // filename only, no path
+    uint64_t size_bytes;
+} sd_storage_dir_entry_t;
+
 // Mounts the card and brings up a FAT filesystem at config->mount_point.
 // Safe to call again after sd_storage_deinit().
 esp_err_t sd_storage_init(const sd_storage_config_t *config);
@@ -80,6 +87,13 @@ bool sd_storage_file_size(const char *path, size_t *out_size);
 
 // Card type/capacity plus filesystem total/free space.
 esp_err_t sd_storage_get_info(sd_storage_info_t *out);
+
+// Lists regular files directly under `path` (NULL or "" for the mount
+// point's root) into `out`, up to `max_out` entries. Skips subdirectories
+// — this card is used flat, one file per log, so there's nothing else
+// worth descending into. Returns the number of entries copied; 0 if
+// nothing is mounted, `path` doesn't exist, or it's empty.
+size_t sd_storage_list_dir(const char *path, sd_storage_dir_entry_t *out, size_t max_out);
 
 #ifdef __cplusplus
 }

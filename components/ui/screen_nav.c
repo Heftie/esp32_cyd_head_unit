@@ -12,7 +12,10 @@ typedef struct {
     screen_create_fn_t create;
 } screen_entry_t;
 
-#define SCREEN_REGISTRY_MAX 8
+// 8 screens exactly filled the previous cap of 8 — bumped for headroom
+// rather than leaving a new screen's registration silently fail the next
+// time one gets added. Cheap: each registry slot is one pointer pair.
+#define SCREEN_REGISTRY_MAX 16
 #define SCREEN_STACK_MAX    8
 
 static screen_entry_t s_screen_registry[SCREEN_REGISTRY_MAX];

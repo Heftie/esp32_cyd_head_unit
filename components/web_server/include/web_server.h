@@ -46,8 +46,9 @@ typedef struct {
 //
 //   GET  /                    embedded dashboard (index.html)
 //   GET  /api/data            current data_hub channel values, as JSON
-//   GET  /api/history?date=   log.csv rows for one day (YYYY-MM-DD), as JSON
-//   GET  /download            raw log.csv
+//   GET  /api/history?date=   the current log's rows for one day (YYYY-MM-DD), as JSON
+//   GET  /api/logs            every file on the card (name, size) + total/free space, as JSON
+//   GET  /download?file=      raw contents of one named file from /api/logs
 esp_err_t web_server_init(const web_server_config_t *config);
 
 // Snapshot of current WiFi/time state, for UI use (e.g. a settings

@@ -1,5 +1,6 @@
 #include "logger.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -30,6 +31,7 @@ static char s_log_path[LOGGER_LOG_PATH_LEN];
 static char s_backup_path[LOGGER_LOG_PATH_LEN];
 static uint32_t s_flush_interval_ms;
 static uint32_t s_max_file_bytes;
+static volatile bool s_running;
 
 // Channels are only ever added, matching data_hub's own append-only table —
 // so a plain linear scan over this small array is enough to track "have we
@@ -139,6 +141,10 @@ static void logger_task(void *arg)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(s_flush_interval_ms));
 
+        if (!s_running) {
+            continue; // idle — logger_stop() was called, nothing to do until logger_start()
+        }
+
         data_hub_channel_info_t channels[DATA_HUB_MAX_CHANNELS];
         size_t n = data_hub_list_channels(channels, DATA_HUB_MAX_CHANNELS);
         size_t total_written = 0;
@@ -152,6 +158,52 @@ static void logger_task(void *arg)
 
         rotate_if_needed();
     }
+}
+
+void logger_stop(void)
+{
+    s_running = false;
+}
+
+esp_err_t logger_start(const char *name)
+{
+    if (name != NULL && name[0] != '\0' && strcmp(name, s_log_path) != 0) {
+        if (strlen(name) >= sizeof(s_log_path)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        strncpy(s_log_path, name, sizeof(s_log_path) - 1);
+        s_log_path[sizeof(s_log_path) - 1] = '\0';
+
+        int n = snprintf(s_backup_path, sizeof(s_backup_path), "%s.1", s_log_path);
+        if (n < 0 || (size_t)n >= sizeof(s_backup_path)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        // A new file has none of the old one's rows, so no channel's
+        // "already logged" bookmark applies to it — same reasoning as
+        // rotate_if_needed() resetting this on rotation.
+        s_state_count = 0;
+    }
+
+    if (!sd_storage_exists(s_log_path)) {
+        esp_err_t err = sd_storage_write(s_log_path, LOGGER_CSV_HEADER, sizeof(LOGGER_CSV_HEADER) - 1, false);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    s_running = true;
+    return ESP_OK;
+}
+
+bool logger_is_running(void)
+{
+    return s_running;
+}
+
+const char *logger_get_current_path(void)
+{
+    return s_log_path;
 }
 
 esp_err_t logger_init(const logger_config_t *config)
@@ -177,11 +229,12 @@ esp_err_t logger_init(const logger_config_t *config)
         return ESP_ERR_INVALID_SIZE;
     }
 
-    if (!sd_storage_exists(s_log_path)) {
-        esp_err_t err = sd_storage_write(s_log_path, LOGGER_CSV_HEADER, sizeof(LOGGER_CSV_HEADER) - 1, false);
-        if (err != ESP_OK) {
-            return err;
-        }
+    // logger_start(NULL) writes the header if s_log_path doesn't exist
+    // yet and sets s_running — same "start immediately" behavior this
+    // function always had, just routed through the shared helper.
+    esp_err_t err = logger_start(NULL);
+    if (err != ESP_OK) {
+        return err;
     }
 
     BaseType_t ok = xTaskCreate(logger_task, "logger", 4096, NULL, 4, NULL);

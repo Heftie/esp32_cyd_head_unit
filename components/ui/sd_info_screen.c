@@ -19,6 +19,12 @@ static void sd_info_back_cb(lv_event_t *e)
     screen_pop();
 }
 
+static void sd_info_manage_logs_cb(lv_event_t *e)
+{
+    s_sd_info_screen_active = false;
+    screen_push("log_manager");
+}
+
 static void sd_info_refresh_timer_cb(lv_timer_t *timer)
 {
     if (!s_sd_info_screen_active) {
@@ -87,12 +93,21 @@ void sd_info_screen_create(void)
     lv_obj_remove_style_all(body);
     lv_obj_set_size(body, lv_pct(100), 206);
     lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(body, 12, 0);
+    lv_obj_set_style_pad_gap(body, 10, 0);
 
     s_sd_info_label = lv_label_create(body);
     lv_label_set_text(s_sd_info_label, "Loading...");
     lv_obj_set_style_text_color(s_sd_info_label, lv_color_white(), 0);
     lv_obj_set_style_text_line_space(s_sd_info_label, 6, 0);
+
+    lv_obj_t *btn_manage = lv_button_create(body);
+    lv_obj_set_size(btn_manage, lv_pct(100), 40);
+    lv_obj_add_event_cb(btn_manage, sd_info_manage_logs_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_manage = lv_label_create(btn_manage);
+    lv_label_set_text(lbl_manage, "Manage logs");
+    lv_obj_center(lbl_manage);
 
     s_sd_info_screen_active = true;
 

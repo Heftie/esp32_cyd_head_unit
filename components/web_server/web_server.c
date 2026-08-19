@@ -21,15 +21,11 @@
 #include <cJSON.h>
 
 #include "data_hub.h"
+#include "logger.h"
 #include "sd_storage.h"
 #include "wifi_provision.h"
 
 static const char *TAG = "web_server";
-
-// Must match the log_path main.c passes to logger_init() — logger owns the
-// file layout (single continuous CSV, no per-day rotation), web_server just
-// reads it.
-#define WEB_SERVER_LOG_PATH "log.csv"
 
 #define WIFI_BRINGUP_STACK   4096
 #define WIFI_BRINGUP_PRIO    5
@@ -277,11 +273,13 @@ static void epoch_us_to_date(int64_t epoch_us, char *out, size_t out_len)
 
 typedef void (*log_row_cb_t)(const log_row_t *row, void *ctx);
 
-// Chunk-reads log.csv through sd_storage_read() (never the whole file at
-// once — SD-card side of a 4 MB-flash, no-PSRAM chip) and invokes cb() for
-// every row whose date matches. Buffers are static: this walks over ~600 B
-// of state regardless of file size, and keeps it off the httpd worker's
-// stack.
+// Chunk-reads the current log through sd_storage_read() (never the whole
+// file at once — SD-card side of a 4 MB-flash, no-PSRAM chip) and invokes
+// cb() for every row whose date matches. Buffers are static: this walks
+// over ~600 B of state regardless of file size, and keeps it off the
+// httpd worker's stack. Always reads logger_get_current_path() — whatever
+// name the log-manager screen has it on right now, not a name baked in
+// here — so a rename there doesn't leave this quietly reading a stale path.
 static void walk_log_rows_for_date(const char *date, log_row_cb_t cb, void *ctx)
 {
     static char chunk[HISTORY_READ_CHUNK];
@@ -292,7 +290,7 @@ static void walk_log_rows_for_date(const char *date, log_row_cb_t cb, void *ctx)
 
     while (1) {
         size_t out_len = 0;
-        esp_err_t err = sd_storage_read(WEB_SERVER_LOG_PATH, offset, chunk, sizeof(chunk), &out_len);
+        esp_err_t err = sd_storage_read(logger_get_current_path(), offset, chunk, sizeof(chunk), &out_len);
         if (err != ESP_OK || out_len == 0) {
             break;
         }
@@ -354,7 +352,7 @@ static void stream_cb(const log_row_t *row, void *ctx)
     }
 }
 
-static bool get_query_date(httpd_req_t *req, char *out, size_t out_len)
+static bool get_query_param(httpd_req_t *req, const char *key, char *out, size_t out_len)
 {
     size_t qlen = httpd_req_get_url_query_len(req) + 1;
     if (qlen <= 1) {
@@ -366,10 +364,24 @@ static bool get_query_date(httpd_req_t *req, char *out, size_t out_len)
     }
     bool ok = false;
     if (httpd_req_get_url_query_str(req, query, qlen) == ESP_OK) {
-        ok = (httpd_query_key_value(query, "date", out, out_len) == ESP_OK);
+        ok = (httpd_query_key_value(query, key, out, out_len) == ESP_OK);
     }
     free(query);
     return ok;
+}
+
+// A bare filename, relative to sd_storage's mount point — rejects any
+// component that could walk outside it ('/' or "..") rather than trusting
+// the query string against the filesystem directly.
+static bool is_safe_filename(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        return false;
+    }
+    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL) {
+        return false;
+    }
+    return true;
 }
 
 // GET /api/history?date=YYYY-MM-DD — reads the whole file twice (once to
@@ -383,11 +395,11 @@ static esp_err_t api_history_handler(httpd_req_t *req)
     }
 
     char date[16];
-    if (!get_query_date(req, date, sizeof(date))) {
+    if (!get_query_param(req, "date", date, sizeof(date))) {
         return send_json_error(req, HTTPD_400, "?date=YYYY-MM-DD is required");
     }
 
-    if (!sd_storage_exists(WEB_SERVER_LOG_PATH)) {
+    if (!sd_storage_exists(logger_get_current_path())) {
         return send_json_error(req, HTTPD_404, "no log file yet");
     }
 
@@ -406,20 +418,63 @@ static esp_err_t api_history_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// GET /api/logs — every file on the card (name, size) via
+// sd_storage_list_dir(), plus total/free space from the same
+// sd_storage_get_info() call the on-device sd_info screen makes, so the
+// web dashboard can show a real explorer instead of one static download
+// link tied to whatever file logger happened to be on at build time.
+static esp_err_t api_logs_handler(httpd_req_t *req)
+{
+    sd_storage_dir_entry_t entries[16];
+    size_t n = sd_storage_list_dir(NULL, entries, 16);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *files = cJSON_CreateArray();
+    for (size_t i = 0; i < n; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", entries[i].name);
+        cJSON_AddNumberToObject(item, "size", (double)entries[i].size_bytes);
+        cJSON_AddItemToArray(files, item);
+    }
+    cJSON_AddItemToObject(root, "files", files);
+
+    sd_storage_info_t info;
+    if (sd_storage_get_info(&info) == ESP_OK) {
+        cJSON_AddNumberToObject(root, "total_bytes", (double)info.total_bytes);
+        cJSON_AddNumberToObject(root, "free_bytes", (double)info.free_bytes);
+    }
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// GET /download?file=<name> — any file from /api/logs' listing, not just
+// whatever logger is currently writing to. Rejects a missing or unsafe
+// filename before ever touching sd_storage with it.
 static esp_err_t download_handler(httpd_req_t *req)
 {
-    if (!sd_storage_exists(WEB_SERVER_LOG_PATH)) {
-        return send_json_error(req, HTTPD_404, "no log file yet");
+    char file[SD_STORAGE_NAME_LEN];
+    if (!get_query_param(req, "file", file, sizeof(file)) || !is_safe_filename(file)) {
+        return send_json_error(req, HTTPD_400, "?file=<name> is required");
+    }
+    if (!sd_storage_exists(file)) {
+        return send_json_error(req, HTTPD_404, "no such file");
     }
 
     httpd_resp_set_type(req, "text/csv");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"log.csv\"");
+    char disposition[SD_STORAGE_NAME_LEN + 32];
+    snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", file);
+    httpd_resp_set_hdr(req, "Content-Disposition", disposition);
 
     static char chunk[1024];
     size_t offset = 0;
     while (1) {
         size_t out_len = 0;
-        esp_err_t err = sd_storage_read(WEB_SERVER_LOG_PATH, offset, chunk, sizeof(chunk), &out_len);
+        esp_err_t err = sd_storage_read(file, offset, chunk, sizeof(chunk), &out_len);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "download: sd_storage_read failed: %s", esp_err_to_name(err));
             break;
@@ -452,6 +507,7 @@ static esp_err_t start_httpd(void)
         { .uri = "/", .method = HTTP_GET, .handler = root_handler },
         { .uri = "/api/data", .method = HTTP_GET, .handler = api_data_handler },
         { .uri = "/api/history", .method = HTTP_GET, .handler = api_history_handler },
+        { .uri = "/api/logs", .method = HTTP_GET, .handler = api_logs_handler },
         { .uri = "/download", .method = HTTP_GET, .handler = download_handler },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

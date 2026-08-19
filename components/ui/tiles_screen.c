@@ -8,6 +8,8 @@
 #include <esp_lvgl_port.h>
 
 #include "data_hub.h"
+#include "graph_screen.h"
+#include "logger.h"
 #include "measurement_screen.h"
 #include "screen_nav.h"
 #include "web_server.h"
@@ -22,8 +24,23 @@ static size_t s_tile_count;
 static lv_obj_t *s_tile_container;
 static lv_obj_t *s_empty_label;
 static lv_obj_t *s_clock_label;
+static lv_obj_t *s_logging_btn;
+static lv_obj_t *s_logging_label;
 static lv_timer_t *s_tile_refresh_timer;
 static bool s_tile_screen_active;
+
+// Resumes/pauses the already-running logger task — naming a new log file
+// is the log-manager screen's job (§14 of the architecture doc), not
+// this quick toggle's. logger_start(NULL) just means "keep using
+// whatever file it's already on."
+static void tile_logging_toggle_cb(lv_event_t *e)
+{
+    if (logger_is_running()) {
+        logger_stop();
+    } else {
+        logger_start(NULL);
+    }
+}
 
 static void tile_clicked_cb(lv_event_t *e)
 {
@@ -31,6 +48,17 @@ static void tile_clicked_cb(lv_event_t *e)
     measurement_screen_set_channel(name);
     s_tile_screen_active = false;
     screen_push("measurement");
+}
+
+// A long press doesn't also fire LV_EVENT_CLICKED on release — LVGL
+// suppresses the click once a long-press has already fired for the same
+// gesture — so a tap opens measurement and a hold opens graph, never both.
+static void tile_long_pressed_cb(lv_event_t *e)
+{
+    const char *name = (const char *)lv_event_get_user_data(e);
+    graph_screen_set_channel(name);
+    s_tile_screen_active = false;
+    screen_push("graph");
 }
 
 static channel_tile_t *find_or_create_tile(const char *name)
@@ -57,6 +85,7 @@ static channel_tile_t *find_or_create_tile(const char *name)
     lv_obj_set_style_pad_all(tile, 8, 0);
     lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(tile, tile_clicked_cb, LV_EVENT_CLICKED, t->name);
+    lv_obj_add_event_cb(tile, tile_long_pressed_cb, LV_EVENT_LONG_PRESSED, t->name);
 
     lv_obj_t *label_name = lv_label_create(tile);
     lv_label_set_text(label_name, t->name);
@@ -100,9 +129,14 @@ static void tile_ui_refresh_timer_cb(lv_timer_t *timer)
         snprintf(clock_buf, sizeof(clock_buf), "Time not set");
     }
 
+    bool logging = logger_is_running();
+
     lvgl_port_lock(0);
 
     lv_label_set_text(s_clock_label, clock_buf);
+
+    lv_label_set_text(s_logging_label, logging ? "Stop log" : "Start log");
+    lv_obj_set_style_bg_color(s_logging_btn, logging ? lv_color_hex(0x3F7A4C) : lv_color_hex(0x444444), 0);
 
     if (n > 0) {
         lv_obj_add_flag(s_empty_label, LV_OBJ_FLAG_HIDDEN);
@@ -164,13 +198,21 @@ void tiles_screen_create(void)
 
     lv_obj_t *clock_bar = lv_obj_create(scr);
     lv_obj_remove_style_all(clock_bar);
-    lv_obj_set_size(clock_bar, lv_pct(100), 20);
+    lv_obj_set_size(clock_bar, lv_pct(100), 26);
+    lv_obj_set_flex_flow(clock_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(clock_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(clock_bar, 8, 0);
 
     s_clock_label = lv_label_create(clock_bar);
     lv_label_set_text(s_clock_label, "Time not set");
     lv_obj_set_style_text_color(s_clock_label, lv_color_hex(0x888888), 0);
-    lv_obj_align(s_clock_label, LV_ALIGN_LEFT_MID, 0, 0);
+
+    s_logging_btn = lv_button_create(clock_bar);
+    lv_obj_set_size(s_logging_btn, 90, 24);
+    lv_obj_add_event_cb(s_logging_btn, tile_logging_toggle_cb, LV_EVENT_CLICKED, NULL);
+    s_logging_label = lv_label_create(s_logging_btn);
+    lv_label_set_text(s_logging_label, "Start log");
+    lv_obj_center(s_logging_label);
 
     s_tile_container = lv_obj_create(scr);
     lv_obj_remove_style_all(s_tile_container);

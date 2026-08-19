@@ -1,5 +1,6 @@
 #include "sd_storage.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -290,6 +291,51 @@ bool sd_storage_file_size(const char *path, size_t *out_size)
         *out_size = (size_t)st.st_size;
     }
     return true;
+}
+
+size_t sd_storage_list_dir(const char *path, sd_storage_dir_entry_t *out, size_t max_out)
+{
+    if (!s_mounted || out == NULL || max_out == 0) {
+        return 0;
+    }
+
+    char full[SD_STORAGE_PATH_LEN];
+    if (build_path((path != NULL && path[0] != '\0') ? path : "/", full, sizeof(full)) != ESP_OK) {
+        return 0;
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+
+    DIR *d = opendir(full);
+    if (d == NULL) {
+        xSemaphoreGive(s_mutex);
+        return 0;
+    }
+
+    size_t count = 0;
+    struct dirent *ent;
+    while (count < max_out && (ent = readdir(d)) != NULL) {
+        if (ent->d_type == DT_DIR) {
+            continue;
+        }
+
+        char entry_full[SD_STORAGE_PATH_LEN];
+        int n = snprintf(entry_full, sizeof(entry_full), "%s/%s", full, ent->d_name);
+        struct stat st;
+        if (n < 0 || (size_t)n >= sizeof(entry_full) || stat(entry_full, &st) != 0) {
+            continue;
+        }
+
+        strncpy(out[count].name, ent->d_name, sizeof(out[count].name) - 1);
+        out[count].name[sizeof(out[count].name) - 1] = '\0';
+        out[count].size_bytes = (uint64_t)st.st_size;
+        count++;
+    }
+
+    closedir(d);
+    xSemaphoreGive(s_mutex);
+
+    return count;
 }
 
 esp_err_t sd_storage_get_info(sd_storage_info_t *out)

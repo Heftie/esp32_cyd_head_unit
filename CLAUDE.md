@@ -57,19 +57,24 @@ is how e.g. `sd_info_screen`'s Back button can just call `screen_pop()`
 and correctly land back on `settings` without knowing or caring that
 that's where it was entered from. Each screen is its own file
 (`tiles_screen.c`/`settings_screen.c`/`measurement_screen.c`/
-`set_time_screen.c`/`sd_info_screen.c`), talking to the others only by
-name through `screen_nav.h` — the one exception is
-`measurement_screen_set_channel()`, a small setter `tiles_screen.c` calls
-before `screen_push("measurement")` so the single measurement-screen
-instance knows which channel to show, since `screen_push()` itself only
-takes a name.
+`set_time_screen.c`/`sd_info_screen.c`/`log_manager_screen.c`/
+`graph_screen.c`, which holds both the **graph** and **graph_config**
+screens), talking to the others only by name through `screen_nav.h` — the
+exceptions are `measurement_screen_set_channel()` and
+`graph_screen_set_channel()`, small setters `tiles_screen.c` calls before
+`screen_push("measurement")`/`screen_push("graph")` so the single
+measurement/graph screen instance knows which channel to show, since
+`screen_push()` itself only takes a name.
 
 - **tiles** (default/home) — a DD/MM/YYYY HH:MM:SS UTC clock (from
   `web_server_get_wall_clock()`; "Time not set" until NTP or a manual set
-  lands) over a data-driven dashboard, one tile per `data_hub` channel,
-  created on first sight and refreshed on an LVGL timer; nothing about the
-  channel set is hardcoded. Tapping a tile opens **measurement** for that
-  channel; its Settings button pushes **settings**.
+  lands), a Start log/Stop log toggle (`logger_is_running()` /
+  `logger_start(NULL)` / `logger_stop()`), over a data-driven dashboard,
+  one tile per `data_hub` channel, created on first sight and refreshed on
+  an LVGL timer; nothing about the channel set is hardcoded. Tapping a
+  tile opens **measurement** for that channel; long-pressing it opens
+  **graph** for that channel instead; its Settings button pushes
+  **settings**.
 - **settings** — WiFi status (mode/SSID/IP/time source, from
   `web_server_get_status()`, polled on its own LVGL timer); a "Sync NTP"
   button (`web_server_sync_ntp_now()`) that forces an immediate resync
@@ -100,9 +105,41 @@ takes a name.
   treats as UTC-only everywhere else anyway.
 - **sd_info** — `sd_storage_is_mounted()` / `sd_storage_get_info()` read
   out as mounted/not, card type, capacity, used/free space, polled on its
-  own LVGL timer; reachable only from **settings**.
+  own LVGL timer; a "Manage logs" button into **log_manager**; reachable
+  only from **settings**.
+- **log_manager** — the on-device counterpart to the web log explorer: a
+  name field (`lv_textarea` + on-screen `lv_keyboard`, shown/hidden on
+  textarea focus/defocus so it doesn't have to permanently share the
+  screen with the file list) and "Use" button that calls
+  `logger_start(name)` to switch which file `logger` is appending to; a
+  scrollable list of files on the card (`sd_storage_list_dir()`, refreshed
+  every 2s), each with a size and either a Delete button
+  (tap-to-arm/confirm) or an "active" tag if it's the file `logger` is
+  currently writing — the active file is never offered for deletion; and
+  a "Clear SD card" button (tap-to-arm/confirm) that calls `logger_stop()`
+  before `sd_storage_format()`, specifically so `logger_is_running()`
+  correctly reflects reality afterward instead of silently recreating a
+  headerless file on the next scheduled flush. Reachable only from
+  **sd_info**.
+- **graph** / **graph_config** — a live line chart (`lv_chart`,
+  `LV_CHART_UPDATE_MODE_SHIFT`) for one channel, opened by long-pressing
+  its tile. Sampling period (tick) and time span are both user-selectable
+  in **graph_config** (reached via a "Cfg" button, three `lv_roller`s:
+  channel/tick/span) and persist across re-entries as file-scope statics;
+  changing them and hitting Apply rebuilds **graph** from scratch, which
+  resets the accumulated chart data by design. Point count is capped at
+  `GRAPH_MAX_POINTS` (240, roughly the panel's pixel width) since this
+  board has no PSRAM — `graph_compute_effective()` is the single place
+  that clamp math lives (`points = span/tick`, clamped, then
+  `effective_span = points * tick`), reused by both the chart view's
+  range label and the config screen's live readout, so the displayed span
+  never silently disagrees with what's actually being sampled. The sample
+  timer is the one screen-timer in this codebase torn down and recreated
+  on every `graph_screen_create()` call rather than created once and left
+  running, since its period depends on the config that can change between
+  visits.
 
-All five screens reuse the same `lv_scr_act()` object — `lv_obj_clean()`
+All eight screens reuse the same `lv_scr_act()` object — `lv_obj_clean()`
 only removes children, not styles/layout applied directly to the screen,
 so each screen-creation function must reset anything it doesn't want
 leaking in from whichever screen ran before it. Every container in a
@@ -165,26 +202,33 @@ rather than hardcoding GPIOs in the component.
   it's already visible on the settings screen, and a 3-color LED runs out
   of clean states fast past two independent yes/no signals.
 - **sd_storage** — FAT-over-SDSPI wrapper around the microSD slot (path
-  read/write/erase/format, rename, mount/unmount, capacity/free-space
-  info). Owns SPI3 (VSPI) exclusively and permanently once mounted — see
-  the `touch` entry above for why that bus is free for it.
-  `bus_already_initialized` still exists in the config struct for a
-  caller that's already brought up the target SPI host itself, but
-  nothing in this repo uses that path today.
+  read/write/erase/format, rename, delete, directory listing
+  (`sd_storage_list_dir()`, flat — skips subdirectories, since the card is
+  used flat), mount/unmount, capacity/free-space info). Owns SPI3 (VSPI)
+  exclusively and permanently once mounted — see the `touch` entry above
+  for why that bus is free for it. `bus_already_initialized` still exists
+  in the config struct for a caller that's already brought up the target
+  SPI host itself, but nothing in this repo uses that path today.
 - **logger** — polls `data_hub` on a timer (default 5s) and appends any
-  samples not yet written to a CSV on the SD card (`log.csv`) via
-  `sd_storage`. Once `log.csv` crosses `max_file_bytes` (default 5 MB),
-  it rotates: the current file becomes `log.csv.1` (`sd_storage_rename()`,
-  overwriting any older backup) and a fresh `log.csv` starts from just the
-  header row — single generation, not a full logrotate scheme, since this
-  is a hobby-scale device. Rotation resets every channel's "already
-  logged" bookmark, which can duplicate up to one flush's worth of rows
-  across the seam (already in the backup, now also in the new file)
-  rather than tracking a per-file cursor — an accepted trade for staying
-  simple. Runs from its own task rather than writing from inside
-  `data_hub_publish()`, specifically so a slow SD write (single-digit ms,
-  but still) never blocks
-  `uart_link`'s RX task and risks dropping UART bytes.
+  samples not yet written to a CSV on the SD card via `sd_storage`, to
+  whichever file is current (`logger_get_current_path()`; `log.csv` by
+  default). `logger_start(name)` switches the active file: renaming
+  (`sd_storage_rename()`) if it differs from the current one, writing a
+  fresh header if the target doesn't already exist, and resetting every
+  channel's "already logged" bookmark; `logger_stop()`/`logger_is_running()`
+  gate the polling task so `components/ui`'s Start/Stop log toggle (tiles
+  screen) and the log-manager screen's rename/switch can control it
+  without reaching into `data_hub` or SD state themselves.
+  `logger_init()` just calls `logger_start(NULL)` internally. Once the
+  current file crosses `max_file_bytes` (default 5 MB), it rotates the
+  same way: current file becomes `<name>.1` (overwriting any older
+  backup), fresh file starts from just the header row — single
+  generation, not a full logrotate scheme, since this is a hobby-scale
+  device; rotation's bookmark reset can duplicate up to one flush's worth
+  of rows across the seam, an accepted trade for staying simple. Runs
+  from its own task rather than writing from inside `data_hub_publish()`,
+  specifically so a slow SD write (single-digit ms, but still) never
+  blocks `uart_link`'s RX task and risks dropping UART bytes.
 - **web_server** — brings up WiFi, SNTP, and mDNS from a task pinned to
   core 1 (the WiFi driver's own task defaults to core 0), then starts
   `esp_http_server`. WiFi credentials are never hardcoded or built into
@@ -200,9 +244,22 @@ rather than hardcoding GPIOs in the component.
   `web_server.c`'s own bring-up, even speculatively.
   Once connected, serves an embedded dashboard at `/`, live channel values
   as JSON at `/api/data`, per-day CSV rows at
-  `/api/history?date=YYYY-MM-DD`, and the raw log at `/download`. Since
-  `logger`'s timestamps are `esp_timer_get_time()` (boot-relative, not
-  wall-clock), `web_server` computes a `boot_epoch_offset_us` once SNTP
+  `/api/history?date=YYYY-MM-DD` (reading from
+  `logger_get_current_path()`, so it stays correct after a rename), a
+  directory listing of every log file on the card plus free/total space
+  as JSON at `/api/logs` (`sd_storage_list_dir()` +
+  `sd_storage_get_info()`), and any one log file at
+  `/download?file=<name>` — `is_safe_filename()` rejects `/` and `..` in
+  `file` before it ever reaches `sd_storage`, since it comes straight off
+  the query string. The dashboard's "Logs" section fetches `/api/logs`
+  once on load and on a Refresh button (not polled every second like
+  `/api/data`, since a directory listing changes rarely and each call is
+  an SD read) and renders one `/download?file=` link per row — this is
+  the web equivalent of the on-device **log_manager** screen, though only
+  **log_manager** can rename/delete/switch files or clear the card; the
+  web side is read/download-only. Since `logger`'s timestamps are
+  `esp_timer_get_time()` (boot-relative, not wall-clock), `web_server`
+  computes a `boot_epoch_offset_us` once SNTP
   syncs and adds it to any stored timestamp to get a real date —
   `/api/history` returns a JSON error (503) if SNTP hasn't synced yet
   rather than guessing. This board has no battery-backed RTC crystal, so
@@ -231,12 +288,15 @@ rather than hardcoding GPIOs in the component.
   again, which requires already being off it.
 - **ui** — every screen and the navigation framework between them; see
   the Architecture section above for the full breakdown. Depends on
-  `data_hub` (tiles, measurement), `web_server` (tiles' clock, settings,
-  set_time), and `sd_storage` (sd_info — read-only status/info calls
-  only, never mount/write/erase) to read state, but never on
-  `lcd`/`touch`/`uart_link`/`rgb_led`/`logger` — hardware bring-up stays
-  in `main.c`, and screens only ever reach data through hub-style
-  components that exist precisely to decouple UI from hardware specifics.
+  `data_hub` (tiles, measurement, graph), `web_server` (tiles' clock,
+  settings, set_time), `logger` (tiles' Start/Stop toggle, log_manager),
+  and `sd_storage` (sd_info's read-only status/info calls; log_manager is
+  the one screen that goes further and calls `sd_storage_list_dir()` /
+  `sd_storage_erase()` / `sd_storage_format()` directly, since managing
+  files on the card is its entire job) to read/change state, but never on
+  `lcd`/`touch`/`uart_link`/`rgb_led` — hardware bring-up stays in
+  `main.c`, and screens only ever reach data through hub-style components
+  that exist precisely to decouple UI from hardware specifics.
   `screen_nav.h` and each screen's own header live at the component root,
   not `include/` — they're internal to `components/ui` (only
   `include/ui.h`'s `ui_init()` is public), matching how `wifi_provision.h`

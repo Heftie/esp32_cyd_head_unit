@@ -37,10 +37,19 @@
 
   <section>
     <h2>History</h2>
-    <p><input type="date" id="history-date"> <button id="history-load">Load</button>
-       <a class="btn" href="/download">Download CSV</a></p>
+    <p><input type="date" id="history-date"> <button id="history-load">Load</button></p>
     <p class="status" id="history-status"></p>
     <pre id="history-out"></pre>
+  </section>
+
+  <section>
+    <h2>Logs</h2>
+    <table id="logs-table">
+      <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
+      <tbody id="logs-body"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+    </table>
+    <p><button id="logs-refresh">Refresh</button></p>
+    <p class="status" id="logs-status"></p>
   </section>
 
 <script>
@@ -83,6 +92,39 @@ document.getElementById('history-load').addEventListener('click', async () => {
     status.textContent = 'Fetch failed';
   }
 });
+
+// Fetched once on load and on demand (the Refresh button) rather than
+// polled like /api/data — the file list only changes on start/stop/
+// rotate/delete, not every second, and each fetch means an SD directory
+// read on the device.
+async function refreshLogs() {
+  const body = document.getElementById('logs-body');
+  const status = document.getElementById('logs-status');
+  try {
+    const res = await fetch('/api/logs');
+    const data = await res.json();
+    const files = data.files || [];
+    if (!files.length) {
+      body.innerHTML = '<tr><td colspan="3" class="empty">No logs yet</td></tr>';
+    } else {
+      body.innerHTML = files.map(f =>
+        `<tr><td>${f.name}</td><td>${(f.size / 1024).toFixed(1)} KB</td>` +
+        `<td><a class="btn" href="/download?file=${encodeURIComponent(f.name)}">Download</a></td></tr>`
+      ).join('');
+    }
+    if (typeof data.free_bytes === 'number' && typeof data.total_bytes === 'number') {
+      const freeMb = Math.round(data.free_bytes / 1048576);
+      const totalMb = Math.round(data.total_bytes / 1048576);
+      status.textContent = `${freeMb} MB free of ${totalMb} MB`;
+    } else {
+      status.textContent = '';
+    }
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="3" class="empty">Fetch failed</td></tr>';
+  }
+}
+refreshLogs();
+document.getElementById('logs-refresh').addEventListener('click', refreshLogs);
 </script>
 </body>
 </html>

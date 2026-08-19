@@ -6,11 +6,11 @@ extern "C" {
 
 // A small registry + back stack, so a screen enters another one by name
 // (screen_push()) instead of calling its constructor directly — this is
-// the piece that lets touch_test_screen's Back button just call
-// screen_pop() and correctly land wherever it was actually entered from
-// (tiles directly, or settings, or anything else later), without knowing
-// or caring who that was. Private to the ui component: every screen file
-// includes this, nothing outside components/ui needs to.
+// the piece that lets e.g. sd_info_screen's Back button just call
+// screen_pop() and correctly land back on settings without knowing or
+// caring that that's where it was entered from. Private to the ui
+// component: every screen file includes this, nothing outside
+// components/ui needs to.
 
 typedef void (*screen_create_fn_t)(void);
 
