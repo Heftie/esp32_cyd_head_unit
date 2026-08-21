@@ -184,7 +184,10 @@ measurement/graph screen instance knows which channel to show, since
   "Use" button that calls
   `logger_start(name)` to switch which file `logger` is appending to; a
   scrollable list of files on the card (`sd_storage_list_dir()`, refreshed
-  every 2s), each with a size and either a Delete button
+  every 2s and sorted newest-first by `mtime` — a fixed order, unlike the
+  web dashboard's sortable Logs card, since this list is short enough on
+  a 240x320 screen that newest-first is just always the useful one),
+  each with a size and either a Delete button
   (tap-to-arm/confirm) or an "active" tag if it's the file `logger` is
   currently writing — the active file is never offered for deletion; and
   a "Clear SD card" button (tap-to-arm/confirm) that calls `logger_stop()`
@@ -346,7 +349,13 @@ rather than hardcoding GPIOs in the component.
   must only ever be called once per boot (it asserts on a duplicate netif
   key) — it belongs solely to `wifi_provision_start_ap()`, not to
   `web_server.c`'s own bring-up, even speculatively.
-  Once connected, serves an embedded dashboard at `/`, live channel values
+  Once connected, serves an embedded dashboard at `/` — sent with
+  `Cache-Control: no-store`, since this one HTML response is the entire
+  app (CSS/JS inlined, no separate asset files) and a browser has no
+  Last-Modified/ETag to revalidate against otherwise; without it, a tab
+  or browser cache could keep serving an old version of the dashboard
+  indefinitely across a firmware update with no way to tell just by
+  looking at it — live channel values
   as JSON at `/api/data`, a directory listing of every log file on the
   card plus free/total space as JSON at `/api/logs`
   (`sd_storage_list_dir()` + `sd_storage_get_info()`), and any one log
@@ -362,7 +371,17 @@ rather than hardcoding GPIOs in the component.
   file that's both `logger_get_current_path()` and currently
   `logger_is_running()`, since erasing an actively-open log file is a
   footgun with no upside over just stopping first. `name`/`file` both go
-  through `is_safe_filename()` the same as `/download` does. There's no
+  through `is_safe_filename()` the same as `/download` does.
+  `start_httpd()`'s `routes[]` table is at 9 entries now — past
+  `HTTPD_DEFAULT_CONFIG()`'s default `max_uri_handlers` of 8, which
+  doesn't fail loudly: `httpd_register_uri_handler()` just returns an
+  error for whichever route runs out of slots (`/download`, last in the
+  array, until this was caught) while every route before it keeps
+  working, so the server looks fine unless something specifically checks
+  that call's return value or greps the boot log for "no slots left".
+  `config.max_uri_handlers` is set to 16 explicitly now, with headroom —
+  bump it again before it's ever tight, not after another route goes
+  quietly missing. There's no
   web equivalent of **log_manager**'s "Clear SD card" — that one's kept
   on-device only, as the one action here destructive enough to be worth
   requiring physical access for. A "Default name" button next to the
