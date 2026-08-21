@@ -293,6 +293,19 @@ bool sd_storage_file_size(const char *path, size_t *out_size)
     return true;
 }
 
+// mtime comes straight from FATFS's get_fattime() (components/fatfs/
+// diskio/diskio.c, upstream ESP-IDF, not something this repo owns) via
+// stat()'s st_mtime, which reads the DOS-timestamp fields it wrote at
+// create/last-write time back out through localtime_r()/mktime() with
+// whatever TZ is current *now* — not necessarily the TZ active when the
+// file was actually written, since FAT timestamps carry no zone
+// information at all. Harmless for same-session use; a file written
+// before a timezone screen change can read back mtime a fixed offset off
+// from reality after one. More fundamentally, get_fattime() itself reads
+// libc's time() — which is 0 (this board has no RTC) until either an
+// SNTP sync or web_server_set_wall_clock() has called settimeofday(), so
+// anything written before either has landed gets stamped near the Unix
+// epoch, not a meaningful date.
 size_t sd_storage_list_dir(const char *path, sd_storage_dir_entry_t *out, size_t max_out)
 {
     if (!s_mounted || out == NULL || max_out == 0) {
@@ -329,6 +342,7 @@ size_t sd_storage_list_dir(const char *path, sd_storage_dir_entry_t *out, size_t
         strncpy(out[count].name, ent->d_name, sizeof(out[count].name) - 1);
         out[count].name[sizeof(out[count].name) - 1] = '\0';
         out[count].size_bytes = (uint64_t)st.st_size;
+        out[count].mtime = st.st_mtime;
         count++;
     }
 

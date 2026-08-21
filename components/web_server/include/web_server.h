@@ -37,6 +37,17 @@ typedef struct {
     web_server_time_source_t time_source;
 } web_server_status_t;
 
+typedef struct {
+    const char *name;     // display label for UI pickers, e.g. "Berlin (CET/CEST)"
+    const char *posix_tz; // POSIX TZ rule string for setenv("TZ", ...) + tzset()
+} web_server_timezone_t;
+
+// Curated list of selectable timezones for UI pickers (e.g. a settings
+// screen roller). Index 0 — Europe/Berlin — is the default applied at
+// boot, since this firmware's primary deployment is in Germany.
+extern const web_server_timezone_t web_server_timezones[];
+extern const size_t web_server_timezone_count;
+
 // Kicks off Wi-Fi station bring-up (SSID/password from Kconfig — see
 // Kconfig.projbuild), SNTP wall-clock sync, mDNS, and the HTTP server, all
 // from a task pinned to core 1 (the Wi-Fi driver's own task defaults to
@@ -46,8 +57,12 @@ typedef struct {
 //
 //   GET  /                    embedded dashboard (index.html)
 //   GET  /api/data            current data_hub channel values, as JSON
-//   GET  /api/history?date=   the current log's rows for one day (YYYY-MM-DD), as JSON
-//   GET  /api/logs            every file on the card (name, size) + total/free space, as JSON
+//   GET  /api/time            { synced, epoch } — device wall clock, for the dashboard's Default-name button
+//   GET  /api/logs            every file on the card (name, size, mtime) + total/free space, as JSON
+//   GET  /api/log/status      { running, current_file } — logger's current state
+//   POST /api/log/start?name= (re)starts logging; name optional, resumes current file if omitted
+//   POST /api/log/stop        pauses logging
+//   POST /api/log/delete?file= deletes one file; refuses the file logger is actively writing
 //   GET  /download?file=      raw contents of one named file from /api/logs
 esp_err_t web_server_init(const web_server_config_t *config);
 
@@ -65,12 +80,24 @@ void web_server_forget_wifi(void);
 
 // Manually sets the wall clock, as a fallback for when SNTP never lands —
 // this board has no battery-backed RTC crystal, so the wall-clock offset
-// normally comes only from SNTP and resets to unset on every boot; if the
-// network has no path to an NTP server, /api/history stays permanently
-// 503 with no other way to recover. epoch_utc is UTC seconds since 1970.
-// Takes effect immediately, the same way an SNTP sync would, and reports
-// as WEB_SERVER_TIME_MANUAL in web_server_get_status() afterward.
+// normally comes only from SNTP and resets to unset on every boot; with
+// neither source landed, logger holds off writing anything at all (see
+// logger_config_t.convert_boot_time_fn) rather than logging a meaningless
+// boot-relative time. epoch_utc is UTC seconds since 1970. Takes effect
+// immediately, the same way an SNTP sync would, and reports as
+// WEB_SERVER_TIME_MANUAL in web_server_get_status() afterward.
 void web_server_set_wall_clock(time_t epoch_utc);
+
+// Converts a boot-relative esp_timer_get_time() timestamp into wall-clock
+// UTC microseconds, using whichever offset web_server_get_wall_clock()
+// itself would currently use (NTP or manual). Returns false if neither
+// source has landed yet. Exposed as a plain, stateless function — not a
+// component-level dependency — specifically so logger.c can convert its
+// own boot-relative data_hub timestamps without introducing a
+// logger<->web_server circular dependency: main.c wires this in as
+// logger_config_t.convert_boot_time_fn instead of logger.c ever
+// including this header.
+bool web_server_convert_boot_time_us(int64_t boot_time_us, int64_t *out_epoch_us);
 
 // Forces a fresh SNTP sync attempt right now, instead of waiting for the
 // client's own poll interval — the way back to WEB_SERVER_TIME_NTP after
@@ -84,6 +111,21 @@ void web_server_sync_ntp_now(void);
 // source last set it (NTP or manual) — see web_server_status_t's
 // time_source. Returns false if neither has landed yet.
 bool web_server_get_wall_clock(time_t *out_epoch_utc);
+
+// Applies web_server_timezones[index] (setenv("TZ", ...) + tzset()) and
+// persists the choice to NVS so it survives reboot. This only changes how
+// a UTC time is *displayed* as local struct tm (e.g. via localtime_r) —
+// web_server_get_wall_clock()'s return value, logger's stored CSV
+// timestamps, and set_time's manual entry all stay UTC regardless, so log
+// files and history stay unambiguous across a timezone change. Returns
+// ESP_ERR_INVALID_ARG if index is out of range.
+esp_err_t web_server_set_timezone(size_t index);
+
+// Index into web_server_timezones[] of the currently applied timezone —
+// for a UI to preselect the right roller entry. Defaults to 0 (Berlin)
+// until web_server_init() loads a persisted choice from NVS, or forever
+// if none was ever saved.
+size_t web_server_get_timezone_index(void);
 
 #ifdef __cplusplus
 }

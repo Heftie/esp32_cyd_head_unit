@@ -8,6 +8,9 @@
 #include "set_time_screen.h"
 #include "settings_screen.h"
 #include "tiles_screen.h"
+#include "time_settings_screen.h"
+#include "timezone_screen.h"
+#include "wifi_settings_screen.h"
 
 void ui_init(void)
 {
@@ -19,5 +22,8 @@ void ui_init(void)
     screen_register("log_manager", log_manager_screen_create);
     screen_register("graph", graph_screen_create);
     screen_register("graph_config", graph_config_screen_create);
+    screen_register("timezone", timezone_screen_create);
+    screen_register("time_settings", time_settings_screen_create);
+    screen_register("wifi_settings", wifi_settings_screen_create);
     screen_activate(SCREEN_HOME);
 }

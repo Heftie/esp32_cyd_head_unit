@@ -5,61 +5,247 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CYD Telemetry</title>
 <style>
-  :root { color-scheme: dark; }
-  body { margin: 0; padding: 24px; background: #10141b; color: #e6e9ef;
-         font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
-  p.sub { color: #97a3b6; margin: 0 0 24px; }
-  table { border-collapse: collapse; width: 100%; max-width: 480px; margin-bottom: 32px; }
-  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #232b38; }
-  th { color: #97a3b6; font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-  td.value { font-variant-numeric: tabular-nums; color: #63b8b5; font-weight: 600; }
-  .empty { color: #97a3b6; padding: 8px 12px; }
-  section { max-width: 480px; margin-bottom: 32px; }
-  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #97a3b6; margin: 0 0 10px; }
-  input[type=date] { background: #1a212c; border: 1px solid #2a3444; color: #e6e9ef; border-radius: 6px; padding: 6px 10px; font: inherit; }
-  button, a.btn { background: #2a3444; border: 1px solid #3a4658; color: #e6e9ef; border-radius: 6px; padding: 6px 14px;
-         font: inherit; cursor: pointer; text-decoration: none; display: inline-block; }
-  button:hover, a.btn:hover { background: #34405480; }
-  pre { background: #161c26; border: 1px solid #232b38; border-radius: 8px; padding: 12px; overflow-x: auto;
-        font-size: 12.5px; max-height: 280px; }
-  .status { font-size: 12.5px; color: #97a3b6; }
-  select { background: #1a212c; border: 1px solid #2a3444; color: #e6e9ef; border-radius: 6px; padding: 6px 10px; font: inherit; }
-  canvas { background: #161c26; border: 1px solid #232b38; border-radius: 8px; display: block; max-width: 100%; }
+  :root {
+    --bg: #F3F5F8;
+    --surface: #FFFFFF;
+    --surface-2: #E8ECF2;
+    --ink: #121822;
+    --ink-muted: #5C6675;
+    --border: rgba(18,24,34,0.10);
+    --border-strong: rgba(18,24,34,0.22);
+    --accent: #0E7C78;
+    --accent-bg: rgba(14,124,120,0.09);
+    --good: #2E7D46;
+    --good-bg: rgba(46,125,70,0.10);
+    --bad: #B3402A;
+    --bad-bg: rgba(179,64,42,0.10);
+    --code-bg: #EDF0F4;
+    --shadow: rgba(18,24,34,0.07);
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10141B;
+      --surface: #161C26;
+      --surface-2: #1E2530;
+      --ink: #E6E9EF;
+      --ink-muted: #97A3B6;
+      --border: rgba(230,233,239,0.12);
+      --border-strong: rgba(230,233,239,0.24);
+      --accent: #63B8B5;
+      --accent-bg: rgba(99,184,181,0.12);
+      --good: #7FBD8A;
+      --good-bg: rgba(127,189,138,0.14);
+      --bad: #E08A73;
+      --bad-bg: rgba(224,138,115,0.14);
+      --code-bg: #1A212C;
+      --shadow: rgba(0,0,0,0.4);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 var(--font-body);
+  }
+  .page { max-width: 760px; margin: 0 auto; padding: 32px 20px 56px; }
+
+  header.topbar { margin-bottom: 26px; }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 8px;
+  }
+  h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 6px; }
+  p.dek { color: var(--ink-muted); margin: 0; font-size: 14.5px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 20px 22px;
+    box-shadow: 0 1px 2px var(--shadow);
+    margin-bottom: 18px;
+  }
+  .card h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-muted);
+    font-weight: 600;
+    margin: 0 0 16px;
+  }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 12px; }
+  .stat-tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+  .stat-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    margin-bottom: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .stat-value {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-unit { font-size: 12px; color: var(--ink-muted); margin-left: 4px; }
+
+  .empty { color: var(--ink-muted); font-size: 14px; grid-column: 1 / -1; }
+  .empty.error, .status-line.error { color: var(--bad); }
+
+  .row-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .row-controls input[type=text] { flex: 1 1 160px; min-width: 0; }
+
+  canvas#graph-canvas { width: 100%; height: 200px; display: block; border-radius: 8px; }
+  .status-line { font-size: 12.5px; color: var(--ink-muted); margin: 12px 0 0; font-variant-numeric: tabular-nums; }
+
+  .pill {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 100px;
+    background: var(--surface-2);
+    color: var(--ink-muted);
+    white-space: nowrap;
+  }
+  .pill.good { background: var(--good-bg); color: var(--good); }
+
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); }
+  th {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-muted);
+    font-weight: 500;
+  }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: var(--ink); }
+  .sort-arrow { display: inline-block; width: 0.9em; margin-left: 2px; color: var(--accent); }
+  td.mono-cell { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.actions { text-align: right; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+
+  input, select {
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    color: var(--ink);
+    border-radius: 7px;
+    padding: 7px 10px;
+    font: 14px var(--font-body);
+  }
+  button.btn-delete {
+    background: var(--bad-bg);
+    border-color: var(--border-strong);
+    color: var(--bad);
+    padding: 5px 12px;
+    font-size: 13px;
+  }
+  button.btn-delete:hover { background: var(--bad); color: var(--surface); }
+  button, a.btn {
+    background: var(--accent-bg);
+    border: 1px solid var(--border-strong);
+    color: var(--accent);
+    border-radius: 7px;
+    padding: 7px 14px;
+    font: 14px var(--font-body);
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  button:hover, a.btn:hover { background: var(--accent); color: var(--surface); }
+  button:focus-visible, a.btn:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  footer.foot { margin-top: 12px; font-size: 12px; color: var(--ink-muted); text-align: center; }
 </style>
 </head>
 <body>
-  <h1>CYD Telemetry</h1>
-  <p class="sub">Live channel values from the companion MCU, polled every second.</p>
+<div class="page">
 
-  <table id="data-table">
-    <thead><tr><th>Channel</th><th>Value</th><th>Unit</th></tr></thead>
-    <tbody id="data-body"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
-  </table>
+  <header class="topbar">
+    <p class="eyebrow">ESP32&#8209;2432S028R &middot; CYD</p>
+    <h1>CYD Telemetry</h1>
+    <p class="dek">Live channel values from the companion MCU, polled every second.</p>
+  </header>
 
-  <section>
+  <section class="card">
+    <h2>Live Values</h2>
+    <div class="stat-grid" id="data-body">
+      <p class="empty">Loading&hellip;</p>
+    </div>
+  </section>
+
+  <section class="card">
     <h2>Live Graph</h2>
-    <p><select id="graph-channel"></select> <button id="graph-clear">Clear</button></p>
-    <canvas id="graph-canvas" width="440" height="180"></canvas>
-    <p class="status" id="graph-status"></p>
+    <div class="row-controls">
+      <select id="graph-channel"></select>
+      <select id="graph-span">
+        <option value="60">1 min</option>
+        <option value="300" selected>5 min</option>
+        <option value="900">15 min</option>
+        <option value="1800">30 min</option>
+        <option value="3600">1 hour</option>
+      </select>
+      <button id="graph-clear" type="button">Clear</button>
+    </div>
+    <canvas id="graph-canvas"></canvas>
+    <p class="status-line" id="graph-status"></p>
   </section>
 
-  <section>
-    <h2>History</h2>
-    <p><input type="date" id="history-date"> <button id="history-load">Load</button></p>
-    <p class="status" id="history-status"></p>
-    <pre id="history-out"></pre>
-  </section>
-
-  <section>
+  <section class="card">
     <h2>Logs</h2>
-    <table id="logs-table">
-      <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
-      <tbody id="logs-body"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
-    </table>
-    <p><button id="logs-refresh">Refresh</button></p>
-    <p class="status" id="logs-status"></p>
+    <div class="row-controls">
+      <span class="pill" id="log-status">Loading&hellip;</span>
+    </div>
+    <div class="row-controls">
+      <input type="text" id="log-name" placeholder="New log name, e.g. log.csv" maxlength="63">
+      <button id="log-default-name" type="button">Default name</button>
+      <button id="log-start" type="button">Start</button>
+      <button id="log-stop" type="button">Stop</button>
+    </div>
+    <div class="table-scroll">
+      <table id="logs-table">
+        <thead><tr>
+          <th class="sortable" data-sort="name">File<span class="sort-arrow" data-arrow="name"></span></th>
+          <th class="sortable" data-sort="size">Size<span class="sort-arrow" data-arrow="size"></span></th>
+          <th class="sortable" data-sort="mtime">Modified<span class="sort-arrow" data-arrow="mtime"></span></th>
+          <th></th>
+          <th></th>
+        </tr></thead>
+        <tbody id="logs-body"><tr><td colspan="5" class="empty">Loading&hellip;</td></tr></tbody>
+      </table>
+    </div>
+    <div class="row-controls" style="margin: 14px 0 0;">
+      <button id="logs-refresh" type="button">Refresh</button>
+      <p class="status-line" id="logs-status" style="margin: 0;"></p>
+    </div>
   </section>
+
+  <footer class="foot">Served directly from the device &middot; no data leaves your LAN</footer>
+</div>
 
 <script>
 // Client-side only — never sent to or stored on the device, which has no
@@ -69,10 +255,17 @@
 // hours-long browser tab doesn't grow this or the redraw cost unbounded.
 // Resets to empty on every page load — it only ever holds what's been
 // published while this tab has been open, nothing from before or after.
-const GRAPH_MAX_POINTS = 300; // ~5 min at the 1s poll rate below
-const graphSeries = {};       // channel name -> [{t, v}]
-const graphUnits = {};        // channel name -> latest unit seen
+const GRAPH_MAX_POINTS = 3600; // 1h at the 1s poll rate below — the largest span the picker offers
+const graphSeries = {};        // channel name -> [{t, v}]
+const graphUnits = {};         // channel name -> latest unit seen
 let graphChannel = null;
+let graphSpanSeconds = 300;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
 
 function graphFmtTime(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -95,19 +288,65 @@ function graphSyncChannels(names) {
   }
 }
 
+// Reads the current theme's colors straight from CSS custom properties
+// rather than hardcoding hex values here a second time — so the canvas
+// (which CSS alone can't reach) still tracks a light/dark OS preference
+// switch instead of silently staying stuck in whichever theme was active
+// on the first draw.
+function graphThemeColors() {
+  const cs = getComputedStyle(document.documentElement);
+  const get = (name, fallback) => (cs.getPropertyValue(name) || fallback).trim();
+  return {
+    accent: get('--accent', '#63b8b5'),
+    border: get('--border', '#232b38'),
+    inkMuted: get('--ink-muted', '#97a3b6'),
+  };
+}
+
+// The canvas's backing buffer is sized in device pixels (via width/height
+// attributes, set here) separately from its CSS box size (100% wide,
+// fixed 200px tall) — without this a high-DPI screen draws a blurry,
+// upscaled 1x image. ctx.setTransform() in drawGraph() then lets every
+// coordinate below be written in plain CSS-pixel space regardless.
+function resizeCanvas() {
+  const canvas = document.getElementById('graph-canvas');
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.clientWidth || canvas.parentElement.clientWidth;
+  const cssHeight = canvas.clientHeight || 200;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+}
+
 function drawGraph() {
   const canvas = document.getElementById('graph-canvas');
   const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.width / dpr, h = canvas.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const series = graphSeries[graphChannel] || [];
+  const fullSeries = graphSeries[graphChannel] || [];
   const status = document.getElementById('graph-status');
-  if (series.length < 2) {
-    status.textContent = series.length ? 'Collecting…' : 'No data yet for this channel';
+  status.classList.remove('error');
+  if (fullSeries.length < 2) {
+    status.textContent = fullSeries.length ? 'Collecting…' : 'No data yet for this channel';
     return;
   }
 
+  // The buffer (graphSeries) holds up to GRAPH_MAX_POINTS regardless of
+  // the picker's current selection, so switching to a wider span doesn't
+  // need to wait and re-accumulate — only what's actually drawn narrows
+  // or widens, a plain filter against the newest sample's own timestamp
+  // rather than wall-clock "now" (which would jump the window if this
+  // tab's been backgrounded and the poll timer throttled).
+  const nowT = fullSeries[fullSeries.length - 1].t;
+  const series = fullSeries.filter(p => nowT - p.t <= graphSpanSeconds);
+  if (series.length < 2) {
+    status.textContent = 'Collecting…';
+    return;
+  }
+
+  const colors = graphThemeColors();
   const values = series.map(p => p.v);
   let min = Math.min(...values), max = Math.max(...values);
   if (min === max) { min -= 1; max += 1; }
@@ -127,7 +366,7 @@ function drawGraph() {
   const gridLines = 4;
   for (let i = 0; i <= gridLines; i++) {
     const y = marginTop + (plotH / gridLines) * i;
-    ctx.strokeStyle = '#232b38';
+    ctx.strokeStyle = colors.border;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(marginLeft, Math.round(y) + 0.5);
@@ -135,13 +374,13 @@ function drawGraph() {
     ctx.stroke();
 
     const value = max - ((max - min) / gridLines) * i;
-    ctx.fillStyle = '#97a3b6';
+    ctx.fillStyle = colors.inkMuted;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     ctx.fillText(value.toFixed(1) + (unit ? ' ' + unit : ''), marginLeft - 6, y);
   }
 
-  ctx.strokeStyle = '#63b8b5';
+  ctx.strokeStyle = colors.accent;
   ctx.lineWidth = 2;
   ctx.beginPath();
   series.forEach((p, i) => {
@@ -151,22 +390,36 @@ function drawGraph() {
   });
   ctx.stroke();
 
+  // Emphasize the most recent sample — the one point that actually
+  // matters most on a live-updating chart — with a filled dot at its
+  // endpoint rather than leaving the line to just stop.
+  const lastPoint = series[series.length - 1];
+  const lastX = marginLeft + plotW;
+  const lastY = marginTop + plotH - ((lastPoint.v - min) / (max - min)) * plotH;
+  ctx.fillStyle = colors.accent;
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
+  ctx.fill();
+
   // Oldest and newest sample times, at the plot's left/right edges —
   // the actual window this session has accumulated, not a fixed span.
-  ctx.fillStyle = '#97a3b6';
+  ctx.fillStyle = colors.inkMuted;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
   ctx.fillText(graphFmtTime(series[0].t), marginLeft, h - marginBottom + 4);
   ctx.textAlign = 'right';
-  ctx.fillText(graphFmtTime(series[series.length - 1].t), marginLeft + plotW, h - marginBottom + 4);
+  ctx.fillText(graphFmtTime(lastPoint.t), marginLeft + plotW, h - marginBottom + 4);
 
-  const last = series[series.length - 1];
   status.textContent =
-    `${last.v.toFixed(2)}${unit ? ' ' + unit : ''} — min ${min.toFixed(2)} / max ${max.toFixed(2)} — ${series.length} pt(s) this session`;
+    `${lastPoint.v.toFixed(2)}${unit ? ' ' + unit : ''} — min ${min.toFixed(2)} / max ${max.toFixed(2)} — ${series.length} pt(s) in view`;
 }
 
 document.getElementById('graph-channel').addEventListener('change', (e) => {
   graphChannel = e.target.value;
+  drawGraph();
+});
+document.getElementById('graph-span').addEventListener('change', (e) => {
+  graphSpanSeconds = parseInt(e.target.value, 10);
   drawGraph();
 });
 document.getElementById('graph-clear').addEventListener('click', () => {
@@ -174,17 +427,29 @@ document.getElementById('graph-clear').addEventListener('click', () => {
   drawGraph();
 });
 
+resizeCanvas();
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { resizeCanvas(); drawGraph(); }, 100);
+});
+// The OS/browser theme can change while this tab stays open (a laptop
+// switching to dark mode at sunset, say) — CSS repaints the page on its
+// own, but the canvas needs an explicit redraw to pick up the new colors.
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawGraph);
+
 async function refreshData() {
   const body = document.getElementById('data-body');
   try {
     const res = await fetch('/api/data');
     const rows = await res.json();
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="3" class="empty">No channels yet</td></tr>';
+      body.innerHTML = '<p class="empty">No channels yet</p>';
       return;
     }
     body.innerHTML = rows.map(r =>
-      `<tr><td>${r.name}</td><td class="value">${r.value.toFixed(2)}</td><td>${r.unit}</td></tr>`
+      `<div class="stat-tile"><span class="stat-label">${escapeHtml(r.name)}</span>` +
+      `<span class="stat-value">${r.value.toFixed(2)}<span class="stat-unit">${escapeHtml(r.unit)}</span></span></div>`
     ).join('');
 
     graphSyncChannels(rows.map(r => r.name));
@@ -196,52 +461,193 @@ async function refreshData() {
     }
     drawGraph();
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="3" class="empty">Fetch failed</td></tr>';
+    body.innerHTML = '<p class="empty error">Fetch failed</p>';
   }
 }
 refreshData();
 setInterval(refreshData, 1000);
 
-document.getElementById('history-load').addEventListener('click', async () => {
-  const date = document.getElementById('history-date').value;
-  const status = document.getElementById('history-status');
-  const out = document.getElementById('history-out');
-  if (!date) { status.textContent = 'Pick a date first.'; return; }
-  status.textContent = 'Loading…';
-  out.textContent = '';
+// Kept in sync by refreshLogs() (which calls refreshLogStatus() first,
+// every time) — logs-body's render needs this to know which file (if
+// any) to tag "active" instead of offering a Delete button for, the same
+// rule the on-device log-manager screen enforces.
+let logStatus = { running: false, current_file: '' };
+
+function renderLogStatusPill() {
+  const el = document.getElementById('log-status');
+  el.textContent = logStatus.current_file
+    ? `${logStatus.running ? 'Logging to' : 'Stopped —'} ${logStatus.current_file}`
+    : (logStatus.running ? 'Logging' : 'Stopped');
+  el.classList.toggle('good', logStatus.running);
+}
+
+async function refreshLogStatus() {
   try {
-    const res = await fetch('/api/history?date=' + encodeURIComponent(date));
-    const body = await res.json();
-    if (!res.ok) {
-      status.textContent = body.error || ('HTTP ' + res.status);
+    const res = await fetch('/api/log/status');
+    logStatus = await res.json();
+  } catch (e) {
+    // Leave logStatus at its last-known value — the pill just goes
+    // stale until the next successful poll, rather than snapping to a
+    // possibly-wrong "Stopped".
+  }
+  renderLogStatusPill();
+}
+
+// Restores the same YYYYMMDD_HHMMSS_log.csv pattern tiles' Start button
+// and log_manager's own Default-name button generate — pulled from
+// /api/time (the device's own wall clock) rather than this browser's
+// Date(), which could be skewed from it, especially before the device
+// has ever gotten an NTP sync and is only running off a manual set.
+// Only fills the field; Start still has to be pressed to actually apply
+// it, same two-step flow as typing a name by hand.
+document.getElementById('log-default-name').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/time');
+    const data = await res.json();
+    if (!data.synced) {
+      alert("Device wall clock isn't set yet (no NTP sync, no manual time) — can't generate a dated name.");
       return;
     }
-    status.textContent = body.length + ' row(s)';
-    out.textContent = JSON.stringify(body, null, 2);
+    const d = new Date(data.epoch * 1000);
+    const pad = (n) => String(n).padStart(2, '0');
+    const name = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}_` +
+                 `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}_log.csv`;
+    document.getElementById('log-name').value = name;
   } catch (e) {
-    status.textContent = 'Fetch failed';
+    alert('Failed to fetch device time');
   }
 });
 
-// Fetched once on load and on demand (the Refresh button) rather than
-// polled like /api/data — the file list only changes on start/stop/
-// rotate/delete, not every second, and each fetch means an SD directory
-// read on the device.
-async function refreshLogs() {
-  const body = document.getElementById('logs-body');
-  const status = document.getElementById('logs-status');
+document.getElementById('log-start').addEventListener('click', async () => {
+  // Empty name = resume whatever file logger's already set to, same as
+  // pressing Use with an empty textarea on the on-device log-manager
+  // screen — not "start a file literally named nothing".
+  const name = document.getElementById('log-name').value.trim();
+  const url = '/api/log/start' + (name ? ('?name=' + encodeURIComponent(name)) : '');
   try {
+    const res = await fetch(url, { method: 'POST' });
+    logStatus = await res.json();
+    if (!res.ok) {
+      alert(logStatus.error || ('HTTP ' + res.status));
+    } else {
+      document.getElementById('log-name').value = '';
+    }
+  } catch (e) {
+    alert('Start failed');
+  }
+  renderLogStatusPill();
+  refreshLogs();
+});
+
+document.getElementById('log-stop').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/log/stop', { method: 'POST' });
+    logStatus = await res.json();
+  } catch (e) {
+    alert('Stop failed');
+  }
+  renderLogStatusPill();
+  refreshLogs();
+});
+
+async function deleteLogFile(name) {
+  if (!confirm(`Delete "${name}"? This can't be undone.`)) {
+    return;
+  }
+  try {
+    const res = await fetch('/api/log/delete?file=' + encodeURIComponent(name), { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) {
+      alert(body.error || ('HTTP ' + res.status));
+      return;
+    }
+  } catch (e) {
+    alert('Delete failed');
+    return;
+  }
+  refreshLogs();
+}
+
+// The last-fetched file list, cached so clicking a column header can
+// re-sort and redraw instantly without another SD directory read —
+// refreshLogs() below is the only thing that ever replaces this array;
+// sorting just reorders a copy of it.
+let logFiles = [];
+let logSortKey = 'name';
+let logSortDir = 1; // 1 = ascending, -1 = descending
+
+// mtime is 0 (Unix epoch) for anything written before wall clock ever
+// landed this boot (no RTC on this board — see sd_storage_list_dir()'s
+// comment) — shown as a dash rather than a misleading 1970 date.
+function formatModified(epochSeconds) {
+  if (!epochSeconds) {
+    return '—';
+  }
+  return new Date(epochSeconds * 1000).toLocaleString([], {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function updateSortArrows() {
+  document.querySelectorAll('.sort-arrow').forEach((el) => {
+    el.textContent = el.dataset.arrow === logSortKey ? (logSortDir === 1 ? '▲' : '▼') : '';
+  });
+}
+
+function renderLogRows() {
+  const body = document.getElementById('logs-body');
+  if (!logFiles.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">No logs yet</td></tr>';
+    return;
+  }
+
+  const sorted = [...logFiles].sort((a, b) => {
+    let av = a[logSortKey], bv = b[logSortKey];
+    if (typeof av === 'string') { av = av.toLowerCase(); bv = bv.toLowerCase(); }
+    if (av < bv) return -1 * logSortDir;
+    if (av > bv) return 1 * logSortDir;
+    return 0;
+  });
+
+  body.innerHTML = sorted.map((f) => {
+    const isActive = logStatus.running && f.name === logStatus.current_file;
+    const action = isActive
+      ? '<span class="pill good">active</span>'
+      : `<button type="button" class="btn-delete" data-file="${escapeHtml(f.name)}">Delete</button>`;
+    return `<tr><td>${escapeHtml(f.name)}</td><td class="mono-cell">${(f.size / 1024).toFixed(1)} KB</td>` +
+           `<td class="mono-cell">${formatModified(f.mtime)}</td>` +
+           `<td><a class="btn" href="/download?file=${encodeURIComponent(f.name)}">Download</a></td>` +
+           `<td class="actions">${action}</td></tr>`;
+  }).join('');
+  body.querySelectorAll('.btn-delete').forEach((btn) => {
+    btn.addEventListener('click', () => deleteLogFile(btn.dataset.file));
+  });
+}
+
+document.querySelectorAll('#logs-table th.sortable').forEach((th) => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.sort;
+    logSortDir = (logSortKey === key) ? -logSortDir : 1;
+    logSortKey = key;
+    updateSortArrows();
+    renderLogRows();
+  });
+});
+updateSortArrows();
+
+// Fetched once on load and on demand (the Refresh button, or after any
+// start/stop/delete action) rather than polled like /api/data — the file
+// list only changes on those actions or a rotation, not every second,
+// and each fetch means an SD directory read on the device.
+async function refreshLogs() {
+  const status = document.getElementById('logs-status');
+  status.classList.remove('error');
+  try {
+    await refreshLogStatus();
     const res = await fetch('/api/logs');
     const data = await res.json();
-    const files = data.files || [];
-    if (!files.length) {
-      body.innerHTML = '<tr><td colspan="3" class="empty">No logs yet</td></tr>';
-    } else {
-      body.innerHTML = files.map(f =>
-        `<tr><td>${f.name}</td><td>${(f.size / 1024).toFixed(1)} KB</td>` +
-        `<td><a class="btn" href="/download?file=${encodeURIComponent(f.name)}">Download</a></td></tr>`
-      ).join('');
-    }
+    logFiles = data.files || [];
+    renderLogRows();
     if (typeof data.free_bytes === 'number' && typeof data.total_bytes === 'number') {
       const freeMb = Math.round(data.free_bytes / 1048576);
       const totalMb = Math.round(data.total_bytes / 1048576);
@@ -250,7 +656,7 @@ async function refreshLogs() {
       status.textContent = '';
     }
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="3" class="empty">Fetch failed</td></tr>';
+    document.getElementById('logs-body').innerHTML = '<tr><td colspan="5" class="empty error">Fetch failed</td></tr>';
   }
 }
 refreshLogs();

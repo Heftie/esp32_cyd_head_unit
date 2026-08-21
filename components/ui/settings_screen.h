@@ -4,10 +4,10 @@
 extern "C" {
 #endif
 
-// WiFi status (mode, SSID, IP, time-sync source) via web_server's status
-// snapshot, a "forget this network" action, a "sync NTP now" retry, and
-// buttons into the manual clock-set screen and the SD card info screen.
-// Reached from the dashboard's Settings button.
+// A flat menu into Time, WiFi, Manage Logs, and SD card — each its own
+// screen now (time_settings_screen.c/wifi_settings_screen.c/
+// log_manager_screen.c/sd_info_screen.c). Reached from the dashboard's
+// Settings button.
 void settings_screen_create(void);
 
 #ifdef __cplusplus

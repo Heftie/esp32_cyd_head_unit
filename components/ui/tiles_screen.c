@@ -9,6 +9,7 @@
 
 #include "data_hub.h"
 #include "graph_screen.h"
+#include "log_naming.h"
 #include "logger.h"
 #include "measurement_screen.h"
 #include "screen_nav.h"
@@ -32,12 +33,14 @@ static lv_timer_t *s_tile_refresh_timer;
 static bool s_tile_screen_active;
 
 // Starting from here always names a fresh file after the current wall
-// clock (YYYYMMDD_HHMMSS_log.csv) rather than reusing whatever was last
-// active — this is the "just start logging" quick action, so each press
-// begins its own dated session; log-manager remains the place to pick a
-// persistent/custom name instead. Falls back to logger_start(NULL)
-// (keep whatever file is already set) only if wall clock isn't
-// available yet — no network path to NTP and no manual set_time entry.
+// clock (YYYYMMDD_HHMMSS_log.csv, via log_naming_default_filename() —
+// also what log_manager's and the web dashboard's own "Default name"
+// actions generate) rather than reusing whatever was last active — this
+// is the "just start logging" quick action, so each press begins its own
+// dated session; log-manager remains the place to pick a persistent/
+// custom name instead. Falls back to logger_start(NULL) (keep whatever
+// file is already set) only if wall clock isn't available yet — no
+// network path to NTP and no manual set_time entry.
 static void tile_logging_toggle_cb(lv_event_t *e)
 {
     if (logger_is_running()) {
@@ -45,18 +48,8 @@ static void tile_logging_toggle_cb(lv_event_t *e)
         return;
     }
 
-    time_t now;
-    if (web_server_get_wall_clock(&now)) {
-        struct tm tm_utc;
-        gmtime_r(&now, &tm_utc);
-        // Sized well above what the format string can ever actually need
-        // (max 24 chars + NUL) — GCC's -Wformat-truncation can't tell
-        // tm_year/tm_mon/etc. are bounded and assumes worst-case %d
-        // width, same false positive as the clock label above.
-        char name[80];
-        snprintf(name, sizeof(name), "%04d%02d%02d_%02d%02d%02d_log.csv",
-                 tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
-                 tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+    char name[80];
+    if (log_naming_default_filename(name, sizeof(name))) {
         logger_start(name);
     } else {
         logger_start(NULL);
@@ -131,21 +124,28 @@ static void tile_ui_refresh_timer_cb(lv_timer_t *timer)
     data_hub_channel_info_t channels[DATA_HUB_MAX_CHANNELS];
     size_t n = data_hub_list_channels(channels, DATA_HUB_MAX_CHANNELS);
 
-    // DD/MM/YYYY HH:MM:SS — always this format, not locale-dependent,
-    // per how this device's owner reads dates. UTC, same as every other
-    // timestamp in this firmware (see set_time_screen.c/web_server.c).
-    // Sized well above what the format string can ever actually need
-    // (max 19 chars + NUL) — GCC's -Wformat-truncation can't tell
-    // tm_year/tm_mday/etc. are bounded and assumes worst-case %d width
-    // for a 24-byte buffer, which trips -Werror.
+    // DD/MM/YYYY HH:MM:SS — always this format, not locale-dependent, per
+    // how this device's owner reads dates. Shown in the configured local
+    // timezone (default Europe/Berlin, see web_server_set_timezone()) via
+    // localtime_r(), which honors whatever POSIX TZ rule was last applied
+    // — everything else in this firmware (logger's CSV timestamps,
+    // web_server_get_wall_clock()'s return value, set_time's manual
+    // entry) stays UTC regardless; this clock label is the one display
+    // that converts. Sized well above what the format string can ever
+    // actually need (max 19 chars + a short zone abbreviation + NUL) —
+    // GCC's -Wformat-truncation can't tell tm_year/tm_mday/etc. are
+    // bounded and assumes worst-case %d width for a 24-byte buffer, which
+    // trips -Werror.
     char clock_buf[80];
     time_t now;
     if (web_server_get_wall_clock(&now)) {
-        struct tm tm_utc;
-        gmtime_r(&now, &tm_utc);
-        snprintf(clock_buf, sizeof(clock_buf), "%02d/%02d/%04d %02d:%02d:%02d",
-                 tm_utc.tm_mday, tm_utc.tm_mon + 1, tm_utc.tm_year + 1900,
-                 tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        struct tm tm_local;
+        localtime_r(&now, &tm_local);
+        char zone_buf[16];
+        strftime(zone_buf, sizeof(zone_buf), "%Z", &tm_local);
+        snprintf(clock_buf, sizeof(clock_buf), "%02d/%02d/%04d %02d:%02d:%02d %s",
+                 tm_local.tm_mday, tm_local.tm_mon + 1, tm_local.tm_year + 1900,
+                 tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec, zone_buf);
     } else {
         snprintf(clock_buf, sizeof(clock_buf), "Time not set");
     }

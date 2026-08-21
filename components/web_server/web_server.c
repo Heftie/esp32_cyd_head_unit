@@ -1,7 +1,9 @@
 #include "web_server.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include <freertos/FreeRTOS.h>
@@ -33,16 +35,14 @@ static const char *TAG = "web_server";
 #define WIFI_CONNECT_TIMEOUT_MS 20000
 #define WIFI_CONNECTED_BIT   (1 << 0)
 
-#define HISTORY_READ_CHUNK   512
-#define HISTORY_LINE_MAX     96
-
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
-// 0 until an SNTP sync has landed. Once set, any boot-relative
-// esp_timer_get_time()/logger timestamp_us converts to wall-clock epoch
-// microseconds by adding this offset — including rows logged before Wi-Fi
-// or SNTP came up, since esp_timer's clock started at the same boot.
+// 0 until an SNTP sync (or a manual set) has landed. Once set, any
+// boot-relative esp_timer_get_time() timestamp converts to wall-clock
+// epoch microseconds by adding this offset — used both by api_data_handler
+// below and, via web_server_convert_boot_time_us(), by logger.c to decide
+// what to actually write into a CSV row (nothing, until this is set).
 static volatile int64_t s_boot_epoch_offset_us = 0;
 static volatile bool s_time_synced = false;
 static volatile web_server_time_source_t s_time_source = WEB_SERVER_TIME_UNSET;
@@ -58,6 +58,60 @@ static char s_wifi_ip[16] = {0};
 static httpd_handle_t s_httpd;
 static uint16_t s_http_port;
 static EventGroupHandle_t s_wifi_event_group;
+
+// --- Timezone (display-only; storage and web_server_get_wall_clock() stay UTC) --
+
+// DST rules taken from the tz database's own POSIX-TZ backward-compat
+// strings (transition weekday/week/hour, not a fixed date) so each one
+// keeps applying correctly year over year rather than needing an update.
+const web_server_timezone_t web_server_timezones[] = {
+    { "Berlin (CET/CEST)",     "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "UTC",                   "UTC0" },
+    { "London (GMT/BST)",      "GMT0BST,M3.5.0/1,M10.5.0" },
+    { "Helsinki (EET/EEST)",   "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Moscow (MSK)",          "MSK-3" },
+    { "New York (EST/EDT)",    "EST5EDT,M3.2.0,M11.1.0" },
+    { "Los Angeles (PST/PDT)", "PST8PDT,M3.2.0,M11.1.0" },
+    { "Dubai (GST)",           "GST-4" },
+    { "New Delhi (IST)",       "IST-5:30" },
+    { "Shanghai (CST)",        "CST-8" },
+    { "Tokyo (JST)",           "JST-9" },
+    { "Sydney (AEST/AEDT)",    "AEST-10AEDT,M10.1.0,M4.1.0/3" },
+};
+const size_t web_server_timezone_count = sizeof(web_server_timezones) / sizeof(web_server_timezones[0]);
+
+#define NVS_TZ_NAMESPACE "tz_cfg"
+#define NVS_TZ_KEY       "tz_idx"
+
+static size_t s_timezone_index = 0;
+
+static void apply_timezone(size_t index)
+{
+    s_timezone_index = index;
+    setenv("TZ", web_server_timezones[index].posix_tz, 1);
+    tzset();
+}
+
+// Loads a persisted timezone choice (default index 0 — Berlin — on first
+// boot, when nothing's been saved yet) and applies it immediately. Unlike
+// the wall clock itself, this doesn't need Wi-Fi or SNTP — the TZ rule
+// only changes how an already-known UTC time gets displayed — so
+// web_server_init() calls this straight away rather than waiting on
+// wifi_bringup_task.
+static void load_timezone_from_nvs(void)
+{
+    uint8_t idx = 0;
+    nvs_handle_t h;
+    if (nvs_open(NVS_TZ_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_TZ_KEY, &idx);
+        nvs_close(h);
+    }
+    if (idx >= web_server_timezone_count) {
+        idx = 0;
+    }
+    apply_timezone(idx);
+    ESP_LOGI(TAG, "timezone: %s", web_server_timezones[idx].name);
+}
 
 // --- Wi-Fi / SNTP / mDNS bring-up ------------------------------------------
 
@@ -204,6 +258,14 @@ static esp_err_t send_json_error(httpd_req_t *req, const char *status, const cha
 static esp_err_t root_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
+    // Without this, a browser is free to cache this page indefinitely —
+    // it's a single static response with no Last-Modified/ETag for it to
+    // revalidate against, and this HTML is the entire app (CSS + JS
+    // inlined, no separate asset files). A tab left open across a
+    // firmware update just keeps running whatever JS it already loaded,
+    // same as any page would; this at least makes a *fresh* load/reload
+    // always get the current version instead of a browser-cached one.
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, (const char *)index_html_start, index_html_end - index_html_start);
 }
 
@@ -233,123 +295,6 @@ static esp_err_t api_data_handler(httpd_req_t *req)
     cJSON_free(json_str);
     cJSON_Delete(root);
     return ESP_OK;
-}
-
-typedef struct {
-    int64_t ts_epoch_us;
-    char channel[DATA_HUB_NAME_LEN];
-    float value;
-    char unit[DATA_HUB_UNIT_LEN];
-} log_row_t;
-
-static bool parse_log_line(const char *line, log_row_t *out)
-{
-    long long ts_us = 0;
-    char channel[DATA_HUB_NAME_LEN] = {0};
-    float value = 0.0f;
-    char unit[DATA_HUB_UNIT_LEN] = {0};
-
-    // "timestamp_us,channel,value,unit" — the exact shape logger.c writes.
-    int n = sscanf(line, "%lld,%15[^,],%f,%7s", &ts_us, channel, &value, unit);
-    if (n != 4) {
-        return false;
-    }
-    out->ts_epoch_us = (int64_t)ts_us + s_boot_epoch_offset_us;
-    strncpy(out->channel, channel, sizeof(out->channel) - 1);
-    out->channel[sizeof(out->channel) - 1] = '\0';
-    out->value = value;
-    strncpy(out->unit, unit, sizeof(out->unit) - 1);
-    out->unit[sizeof(out->unit) - 1] = '\0';
-    return true;
-}
-
-static void epoch_us_to_date(int64_t epoch_us, char *out, size_t out_len)
-{
-    time_t t = (time_t)(epoch_us / 1000000);
-    struct tm tm_info;
-    gmtime_r(&t, &tm_info);
-    strftime(out, out_len, "%Y-%m-%d", &tm_info);
-}
-
-typedef void (*log_row_cb_t)(const log_row_t *row, void *ctx);
-
-// Chunk-reads the current log through sd_storage_read() (never the whole
-// file at once — SD-card side of a 4 MB-flash, no-PSRAM chip) and invokes
-// cb() for every row whose date matches. Buffers are static: this walks
-// over ~600 B of state regardless of file size, and keeps it off the
-// httpd worker's stack. Always reads logger_get_current_path() — whatever
-// name the log-manager screen has it on right now, not a name baked in
-// here — so a rename there doesn't leave this quietly reading a stale path.
-static void walk_log_rows_for_date(const char *date, log_row_cb_t cb, void *ctx)
-{
-    static char chunk[HISTORY_READ_CHUNK];
-    static char line[HISTORY_LINE_MAX];
-    size_t line_len = 0;
-    size_t offset = 0;
-    bool header_skipped = false;
-
-    while (1) {
-        size_t out_len = 0;
-        esp_err_t err = sd_storage_read(logger_get_current_path(), offset, chunk, sizeof(chunk), &out_len);
-        if (err != ESP_OK || out_len == 0) {
-            break;
-        }
-        offset += out_len;
-
-        for (size_t i = 0; i < out_len; i++) {
-            char c = chunk[i];
-            if (c != '\n') {
-                if (line_len < sizeof(line) - 1) {
-                    line[line_len++] = c;
-                }
-                continue;
-            }
-            line[line_len] = '\0';
-            line_len = 0;
-
-            if (!header_skipped) {
-                header_skipped = true;
-                continue;
-            }
-
-            log_row_t row;
-            if (!parse_log_line(line, &row)) {
-                continue;
-            }
-            char row_date[11];
-            epoch_us_to_date(row.ts_epoch_us, row_date, sizeof(row_date));
-            if (strcmp(row_date, date) == 0) {
-                cb(&row, ctx);
-            }
-        }
-    }
-}
-
-typedef struct {
-    bool found;
-} find_ctx_t;
-
-static void find_cb(const log_row_t *row, void *ctx)
-{
-    ((find_ctx_t *)ctx)->found = true;
-}
-
-typedef struct {
-    httpd_req_t *req;
-    bool first;
-} stream_ctx_t;
-
-static void stream_cb(const log_row_t *row, void *ctx)
-{
-    stream_ctx_t *sc = (stream_ctx_t *)ctx;
-    char buf[128];
-    int len = snprintf(buf, sizeof(buf), "%s{\"ts_epoch\":%lld,\"channel\":\"%s\",\"value\":%.4f,\"unit\":\"%s\"}",
-                        sc->first ? "" : ",", (long long)(row->ts_epoch_us / 1000000),
-                        row->channel, row->value, row->unit);
-    if (len > 0 && (size_t)len < sizeof(buf)) {
-        httpd_resp_send_chunk(sc->req, buf, len);
-        sc->first = false;
-    }
 }
 
 static bool get_query_param(httpd_req_t *req, const char *key, char *out, size_t out_len)
@@ -384,40 +329,6 @@ static bool is_safe_filename(const char *name)
     return true;
 }
 
-// GET /api/history?date=YYYY-MM-DD — reads the whole file twice (once to
-// check for a match, so a 404 can still be sent before any bytes go out;
-// once to stream matches as they're found). Simple, and log.csv is a
-// hobby-scale file, not something worth a single-pass buffering scheme for.
-static esp_err_t api_history_handler(httpd_req_t *req)
-{
-    if (!s_time_synced) {
-        return send_json_error(req, "503 Service Unavailable", "time not synced yet (SNTP)");
-    }
-
-    char date[16];
-    if (!get_query_param(req, "date", date, sizeof(date))) {
-        return send_json_error(req, HTTPD_400, "?date=YYYY-MM-DD is required");
-    }
-
-    if (!sd_storage_exists(logger_get_current_path())) {
-        return send_json_error(req, HTTPD_404, "no log file yet");
-    }
-
-    find_ctx_t fc = { .found = false };
-    walk_log_rows_for_date(date, find_cb, &fc);
-    if (!fc.found) {
-        return send_json_error(req, HTTPD_404, "no rows for that date");
-    }
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send_chunk(req, "[", 1);
-    stream_ctx_t sc = { .req = req, .first = true };
-    walk_log_rows_for_date(date, stream_cb, &sc);
-    httpd_resp_send_chunk(req, "]", 1);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
-}
-
 // GET /api/logs — every file on the card (name, size) via
 // sd_storage_list_dir(), plus total/free space from the same
 // sd_storage_get_info() call the on-device sd_info screen makes, so the
@@ -434,6 +345,12 @@ static esp_err_t api_logs_handler(httpd_req_t *req)
         cJSON *item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "name", entries[i].name);
         cJSON_AddNumberToObject(item, "size", (double)entries[i].size_bytes);
+        // 0 (Unix epoch) if the file was written before any wall clock
+        // ever landed this boot — see sd_storage_list_dir()'s comment.
+        // Sent regardless rather than filtered to null, since the
+        // dashboard's sort-by-modified still needs a comparable value
+        // even for those rows.
+        cJSON_AddNumberToObject(item, "mtime", (double)entries[i].mtime);
         cJSON_AddItemToArray(files, item);
     }
     cJSON_AddItemToObject(root, "files", files);
@@ -491,27 +408,148 @@ static esp_err_t download_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// GET /api/time — the device's own wall clock (UTC epoch seconds) and
+// whether it's actually synced yet. Lets the dashboard's "Default name"
+// button build the same YYYYMMDD_HHMMSS_log.csv pattern tiles' Start
+// button and log_manager's own Default-name button do (see
+// log_naming_default_filename()), from the device's clock rather than
+// the browser's — which could be skewed from it, especially for a device
+// that's had no NTP sync yet and is only running off a manual set.
+static esp_err_t api_time_handler(httpd_req_t *req)
+{
+    time_t now;
+    bool synced = web_server_get_wall_clock(&now);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "synced", synced);
+    if (synced) {
+        cJSON_AddNumberToObject(root, "epoch", (double)now);
+    } else {
+        cJSON_AddNullToObject(root, "epoch");
+    }
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// GET /api/log/status — logger's current state, the web equivalent of what
+// the on-device log-manager screen's status line shows ("Logging to: X
+// (running/stopped)").
+static esp_err_t api_log_status_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "running", logger_is_running());
+    cJSON_AddStringToObject(root, "current_file", logger_get_current_path());
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// POST /api/log/start?name=<name> — the web equivalent of log-manager's
+// name field + Use button. name is optional: omitted (or empty) just
+// resumes whatever file logger is already set to, same as pressing Use
+// with an empty textarea on-device. A given name doesn't need to already
+// exist — logger_start() writes a fresh header row for one that doesn't.
+static esp_err_t api_log_start_handler(httpd_req_t *req)
+{
+    char name[SD_STORAGE_NAME_LEN];
+    bool has_name = get_query_param(req, "name", name, sizeof(name));
+    if (has_name && !is_safe_filename(name)) {
+        return send_json_error(req, HTTPD_400, "invalid name");
+    }
+
+    esp_err_t err = logger_start(has_name ? name : NULL);
+    if (err != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+    }
+    return api_log_status_handler(req);
+}
+
+// POST /api/log/stop — the web equivalent of... there's no direct
+// on-device equivalent, actually; the tiles screen's Start/Stop toggle is
+// the closest analog. Pauses the logger task; logger_stop() is always
+// safe to call even if already stopped.
+static esp_err_t api_log_stop_handler(httpd_req_t *req)
+{
+    logger_stop();
+    return api_log_status_handler(req);
+}
+
+// POST /api/log/delete?file=<name> — same rule as log-manager's per-row
+// Delete: refuses the file logger is actively writing to, since erasing
+// it out from under an open logging session is a footgun with no upside
+// over just stopping first.
+static esp_err_t api_log_delete_handler(httpd_req_t *req)
+{
+    char file[SD_STORAGE_NAME_LEN];
+    if (!get_query_param(req, "file", file, sizeof(file)) || !is_safe_filename(file)) {
+        return send_json_error(req, HTTPD_400, "?file=<name> is required");
+    }
+    if (!sd_storage_exists(file)) {
+        return send_json_error(req, HTTPD_404, "no such file");
+    }
+    if (logger_is_running() && strcmp(file, logger_get_current_path()) == 0) {
+        return send_json_error(req, "409 Conflict", "file is actively being logged to — stop first");
+    }
+
+    esp_err_t err = sd_storage_erase(file);
+    if (err != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "deleted", true);
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 static esp_err_t start_httpd(void)
 {
+    static const httpd_uri_t routes[] = {
+        { .uri = "/", .method = HTTP_GET, .handler = root_handler },
+        { .uri = "/api/data", .method = HTTP_GET, .handler = api_data_handler },
+        { .uri = "/api/time", .method = HTTP_GET, .handler = api_time_handler },
+        { .uri = "/api/logs", .method = HTTP_GET, .handler = api_logs_handler },
+        { .uri = "/api/log/status", .method = HTTP_GET, .handler = api_log_status_handler },
+        { .uri = "/api/log/start", .method = HTTP_POST, .handler = api_log_start_handler },
+        { .uri = "/api/log/stop", .method = HTTP_POST, .handler = api_log_stop_handler },
+        { .uri = "/api/log/delete", .method = HTTP_POST, .handler = api_log_delete_handler },
+        { .uri = "/download", .method = HTTP_GET, .handler = download_handler },
+    };
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = s_http_port;
     config.stack_size = 6144;
     config.core_id = WIFI_BRINGUP_CORE;
+    // HTTPD_DEFAULT_CONFIG()'s max_uri_handlers is 8 — one short of
+    // routes[] below once the log-control endpoints landed, which failed
+    // silently (httpd_register_uri_handler()'s return value went
+    // unchecked) until a "no slots left" log line gave it away. Sized
+    // with headroom rather than an exact match, so the next route added
+    // here doesn't silently repeat this.
+    config.max_uri_handlers = 16;
 
     esp_err_t err = httpd_start(&s_httpd, &config);
     if (err != ESP_OK) {
         return err;
     }
 
-    static const httpd_uri_t routes[] = {
-        { .uri = "/", .method = HTTP_GET, .handler = root_handler },
-        { .uri = "/api/data", .method = HTTP_GET, .handler = api_data_handler },
-        { .uri = "/api/history", .method = HTTP_GET, .handler = api_history_handler },
-        { .uri = "/api/logs", .method = HTTP_GET, .handler = api_logs_handler },
-        { .uri = "/download", .method = HTTP_GET, .handler = download_handler },
-    };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        httpd_register_uri_handler(s_httpd, &routes[i]);
+        if (httpd_register_uri_handler(s_httpd, &routes[i]) != ESP_OK) {
+            ESP_LOGE(TAG, "failed to register route: %s", routes[i].uri);
+        }
     }
 
     ESP_LOGI(TAG, "httpd started on port %u", s_http_port);
@@ -521,6 +559,14 @@ static esp_err_t start_httpd(void)
 esp_err_t web_server_init(const web_server_config_t *config)
 {
     s_http_port = (config != NULL && config->http_port != 0) ? config->http_port : 80;
+
+    // NVS + timezone don't depend on Wi-Fi, so set them up here rather
+    // than inside wifi_bringup_task — the on-device clock should read
+    // correctly in local time even before, or without, a network.
+    // nvs_flash_init() is safe to call again from wifi_bringup_task below:
+    // it's a no-op once the default partition is already initialized.
+    ESP_ERROR_CHECK(nvs_flash_init());
+    load_timezone_from_nvs();
 
     BaseType_t ok = xTaskCreatePinnedToCore(wifi_bringup_task, "web_bringup",
                                              WIFI_BRINGUP_STACK, NULL, WIFI_BRINGUP_PRIO,
@@ -559,13 +605,63 @@ bool web_server_get_wall_clock(time_t *out_epoch_utc)
     return true;
 }
 
+bool web_server_convert_boot_time_us(int64_t boot_time_us, int64_t *out_epoch_us)
+{
+    if (!s_time_synced) {
+        return false;
+    }
+    *out_epoch_us = boot_time_us + s_boot_epoch_offset_us;
+    return true;
+}
+
 void web_server_set_wall_clock(time_t epoch_utc)
 {
     int64_t epoch_us = (int64_t)epoch_utc * 1000000LL;
     s_boot_epoch_offset_us = epoch_us - esp_timer_get_time();
     s_time_synced = true;
     s_time_source = WEB_SERVER_TIME_MANUAL;
+
+    // An SNTP sync calls settimeofday() itself, internally, before ever
+    // reaching sntp_sync_cb() — this is the manual-set equivalent of
+    // that. Without it, libc's own time()/gettimeofday() stay wherever
+    // they defaulted to (this board has no RTC, so effectively unset),
+    // even though web_server's own s_boot_epoch_offset_us above is
+    // correct — and FATFS's get_fattime() (components/fatfs/diskio/
+    // diskio.c, upstream ESP-IDF, not something this repo owns) reads
+    // time() directly for every file's last-modified stamp. Skipping
+    // this left every file saved during a manual-time-only session
+    // (no NTP at all) stamped with whatever time() defaulted to instead
+    // of the actual wall-clock time.
+    struct timeval tv = { .tv_sec = epoch_utc, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+
     ESP_LOGI(TAG, "wall clock set manually");
+}
+
+esp_err_t web_server_set_timezone(size_t index)
+{
+    if (index >= web_server_timezone_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    apply_timezone(index);
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_TZ_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_u8(h, NVS_TZ_KEY, (uint8_t)index);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    ESP_LOGI(TAG, "timezone set to %s", web_server_timezones[index].name);
+    return err;
+}
+
+size_t web_server_get_timezone_index(void)
+{
+    return s_timezone_index;
 }
 
 static void forget_wifi_task(void *arg)

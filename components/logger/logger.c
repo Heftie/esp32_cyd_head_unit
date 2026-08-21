@@ -18,7 +18,7 @@ static const char *TAG = "logger";
 #define LOGGER_DEFAULT_INTERVAL_MS 5000
 #define LOGGER_DEFAULT_MAX_BYTES   (5 * 1024 * 1024)
 #define LOGGER_CHUNK_BYTES         8192 // holds a full DATA_HUB_HISTORY_LEN catch-up in one write
-#define LOGGER_CSV_HEADER          "timestamp_us,channel,value,unit\n"
+#define LOGGER_CSV_HEADER          "timestamp_epoch_us,channel,value,unit\n"
 
 typedef struct {
     char name[DATA_HUB_NAME_LEN];
@@ -32,6 +32,7 @@ static char s_backup_path[LOGGER_LOG_PATH_LEN];
 static uint32_t s_flush_interval_ms;
 static uint32_t s_max_file_bytes;
 static volatile bool s_running;
+static bool (*s_convert_boot_time_fn)(int64_t boot_time_us, int64_t *out_epoch_us);
 
 // Channels are only ever added, matching data_hub's own append-only table —
 // so a plain linear scan over this small array is enough to track "have we
@@ -76,8 +77,16 @@ static size_t flush_channel(const char *name)
         if (s_history[i].timestamp_us <= *last_ts) {
             continue;
         }
+        // Bookmark (new_last_ts) only advances past samples actually
+        // written below — so a sample seen before the wall clock landed
+        // gets retried on every later flush, using whatever offset is
+        // current then, rather than being silently skipped forever.
+        int64_t epoch_us;
+        if (!s_convert_boot_time_fn(s_history[i].timestamp_us, &epoch_us)) {
+            break; // no wall clock yet — this and every later sample this flush would fail the same way
+        }
         int line_len = snprintf(s_buf + buf_len, sizeof(s_buf) - buf_len, "%lld,%s,%.4f,%s\n",
-                                 (long long)s_history[i].timestamp_us, s_history[i].name,
+                                 (long long)epoch_us, s_history[i].name,
                                  s_history[i].value, s_history[i].unit);
         if (line_len < 0 || (size_t)line_len >= sizeof(s_buf) - buf_len) {
             break; // out of room; whatever's left is picked up next flush
@@ -211,6 +220,9 @@ esp_err_t logger_init(const logger_config_t *config)
     if (config == NULL || config->log_path == NULL || config->log_path[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
+    if (config->convert_boot_time_fn == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (!sd_storage_is_mounted()) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -222,6 +234,7 @@ esp_err_t logger_init(const logger_config_t *config)
     s_log_path[sizeof(s_log_path) - 1] = '\0';
     s_flush_interval_ms = config->flush_interval_ms ? config->flush_interval_ms : LOGGER_DEFAULT_INTERVAL_MS;
     s_max_file_bytes = config->max_file_bytes ? config->max_file_bytes : LOGGER_DEFAULT_MAX_BYTES;
+    s_convert_boot_time_fn = config->convert_boot_time_fn;
     s_state_count = 0;
 
     int n = snprintf(s_backup_path, sizeof(s_backup_path), "%s.1", s_log_path);

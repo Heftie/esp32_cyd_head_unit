@@ -202,6 +202,14 @@ void app_main(void)
         const logger_config_t logger_cfg = {
             .log_path = "log.csv",
             .flush_interval_ms = 5000,
+            // Safe to wire in before web_server_init() runs below (it
+            // hasn't yet at this point in boot) — this is just a function
+            // pointer, and the function itself reads web_server's wall
+            // clock state lazily each time logger actually calls it, long
+            // after web_server_init() has run. Until then it correctly
+            // reports "not synced yet", same as every other subsystem
+            // that's safe to see before its own _init() has caught up.
+            .convert_boot_time_fn = web_server_convert_boot_time_us,
         };
         if (logger_init(&logger_cfg) != ESP_OK) {
             ESP_LOGE(TAG, "logger_init failed");

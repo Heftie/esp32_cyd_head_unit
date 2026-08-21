@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include <esp_err.h>
 #include <driver/gpio.h>
@@ -42,6 +43,9 @@ typedef struct {
 typedef struct {
     char name[SD_STORAGE_NAME_LEN]; // filename only, no path
     uint64_t size_bytes;
+    time_t mtime; // last-modified time, from FATFS's get_fattime(); see
+                  // sd_storage_list_dir()'s comment for what this
+                  // actually needs to be meaningful
 } sd_storage_dir_entry_t;
 
 // Mounts the card and brings up a FAT filesystem at config->mount_point.

@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <freertos/FreeRTOS.h>
@@ -10,6 +11,7 @@
 #include <lvgl.h>
 #include <esp_lvgl_port.h>
 
+#include "log_naming.h"
 #include "logger.h"
 #include "screen_nav.h"
 #include "sd_storage.h"
@@ -68,6 +70,20 @@ static void log_manager_use_name_cb(lv_event_t *e)
     logger_start((name != NULL && name[0] != '\0') ? name : NULL);
     lv_obj_add_flag(s_keyboard, LV_OBJ_FLAG_HIDDEN);
     log_manager_refresh_files();
+}
+
+// Fills the name field with the same YYYYMMDD_HHMMSS_log.csv pattern
+// tiles' Start button uses, for restoring it after typing a custom name
+// — doesn't start logging on its own, same two-step "fill, then Use" as
+// typing a name by hand. Silent no-op if wall clock isn't available yet
+// (no NTP sync, no manual set_time entry), same as Sync NTP's no-op on
+// settings when there's no network path to reach a server either.
+static void log_manager_default_name_cb(lv_event_t *e)
+{
+    char name[80];
+    if (log_naming_default_filename(name, sizeof(name))) {
+        lv_textarea_set_text(s_name_ta, name);
+    }
 }
 
 static void log_manager_delete_disarm_cb(lv_timer_t *timer)
@@ -168,10 +184,26 @@ static void log_manager_clear_cb(lv_event_t *e)
     xTaskCreate(log_manager_clear_task, "log_clear", 3072, NULL, 4, NULL);
 }
 
+// Newest-first by mtime — sd_storage_list_dir() itself just hands back
+// readdir()'s order (filesystem-defined, not chronological). Ties (e.g.
+// entries.mtime both 0, written before wall clock ever landed — see
+// sd_storage_list_dir()'s comment) fall back to name order rather than
+// leaving qsort's result unspecified between them.
+static int compare_entries_newest_first(const void *a, const void *b)
+{
+    const sd_storage_dir_entry_t *ea = (const sd_storage_dir_entry_t *)a;
+    const sd_storage_dir_entry_t *eb = (const sd_storage_dir_entry_t *)b;
+    if (ea->mtime != eb->mtime) {
+        return (ea->mtime > eb->mtime) ? -1 : 1;
+    }
+    return strcmp(ea->name, eb->name);
+}
+
 static void log_manager_refresh_files(void)
 {
     sd_storage_dir_entry_t entries[LOG_MANAGER_MAX_FILES];
     size_t n = sd_storage_list_dir(NULL, entries, LOG_MANAGER_MAX_FILES);
+    qsort(entries, n, sizeof(entries[0]), compare_entries_newest_first);
     const char *active_path = logger_get_current_path();
     bool logging = logger_is_running();
 
@@ -284,6 +316,13 @@ void log_manager_screen_create(void)
     lv_textarea_set_placeholder_text(s_name_ta, "log.csv");
     lv_textarea_set_max_length(s_name_ta, SD_STORAGE_NAME_LEN - 1);
     lv_obj_add_event_cb(s_name_ta, log_manager_ta_focus_cb, LV_EVENT_FOCUSED, NULL);
+
+    lv_obj_t *btn_default = lv_button_create(name_row);
+    lv_obj_set_size(btn_default, 70, 32);
+    lv_obj_add_event_cb(btn_default, log_manager_default_name_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_default = lv_label_create(btn_default);
+    lv_label_set_text(lbl_default, "Default");
+    lv_obj_center(lbl_default);
 
     lv_obj_t *btn_use = lv_button_create(name_row);
     lv_obj_set_size(btn_use, 60, 32);
